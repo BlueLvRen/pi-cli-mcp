@@ -311,12 +311,19 @@ TypeScript, mirroring pi's own toolchain — one version newer where there is a 
 | strictness | `strict`, `erasableSyntaxOnly` | plus `verbatimModuleSyntax`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noFallthroughCasesInSwitch`, `noUnusedLocals/Parameters` |
 
 ```bash
+npm run hooks          # once per clone: git hooks from .githooks/
 npm run build          # tsc -> dist/
 npm test               # unit + type tests, no API access, no tokens
 npm run check          # format + types + tests
 npm run fix            # biome --write
 PI_CLI_MCP_LIVE=1 npm test   # also exercise the real pi binary
 ```
+
+`npm run hooks` points `core.hooksPath` at `.githooks/`. pre-commit runs Biome and
+rejects a `package-lock.json` that has drifted from `package.json` — `npm ci` accepts such a lock,
+so nothing else catches it; this repo's lock had been stale since the TypeScript migration.
+pre-push runs the suite once, type tests included. It is not wired into `prepare`, because that
+also runs for anyone installing this package from git, and their hooks are not ours to set.
 
 ### Types come from pi
 

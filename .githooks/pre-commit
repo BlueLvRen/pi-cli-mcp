@@ -1,0 +1,16 @@
+#!/bin/sh
+# Fast checks only. Anything that takes real time belongs in pre-push, or people
+# will start passing --no-verify and the hook stops existing.
+set -e
+
+npx biome check .
+
+# package-lock.json drifting from package.json is not caught by `npm ci`, so it
+# rots silently: this repo's lock sat on 0.3.0, with a bin that had not existed
+# since the TypeScript migration, through several releases.
+npm install --package-lock-only --ignore-scripts --silent
+if ! git diff --quiet -- package-lock.json; then
+	echo "pre-commit: package-lock.json was out of date with package.json." >&2
+	echo "It has been regenerated — review and stage it, then commit again." >&2
+	exit 1
+fi

@@ -1,0 +1,5 @@
+#!/bin/sh
+# The full suite, once, before anything leaves the machine. It includes the type
+# tests that compare our view of pi's wire contract against the installed pi.
+set -e
+npm test
