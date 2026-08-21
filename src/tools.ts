@@ -1,9 +1,7 @@
 // Tool schemas and their implementations.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
 import type { Accumulator } from "./answer.ts";
 import {
 	accumulate,
@@ -15,17 +13,12 @@ import {
 	summarize,
 	tailStderr,
 } from "./answer.ts";
-import {
-	ARGV_PROMPT_LIMIT,
-	DEFAULT_MODEL,
-	DEFAULT_THINKING,
-	MAX_PROMPT,
-	MAX_TIMEOUT_MS,
-	TIMEOUT_MS,
-} from "./config.ts";
+import { DEFAULT_MODEL, DEFAULT_THINKING, MAX_PROMPT, MAX_TIMEOUT_MS, TIMEOUT_MS } from "./config.ts";
 import type { RunResult } from "./pi-process.ts";
 import { runPi, withSlot } from "./pi-process.ts";
 import { getSession, listSessions, rememberSession, withSessionLock } from "./sessions.ts";
+import type { RunPlan, Transport } from "./transport/index.ts";
+import { getRun, listRuns, resolveTransport, TRANSPORT_NAMES } from "./transport/index.ts";
 import type { CallContext, RunOverrides, ThinkingLevel, ToolDefinition, ToolResult } from "./types.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./types.ts";
 
@@ -42,6 +35,13 @@ const SHARED_PROPS = {
 		type: "string",
 		enum: THINKING_LEVELS,
 		description: "Thinking level. Defaults to your pi settings.",
+	},
+	transport: {
+		type: "string",
+		enum: TRANSPORT_NAMES,
+		description:
+			"How to drive pi. 'print' (default) runs one process per turn. 'rpc' keeps pi up and lets " +
+			"pi_send deliver a message into the turn while it runs.",
 	},
 	timeout_ms: {
 		type: "integer",
@@ -139,6 +139,44 @@ export const TOOLS: ToolDefinition[] = [
 		},
 	},
 	{
+		name: "pi_send",
+		description:
+			"Send a message into a pi turn that is running right now. Only possible for runs started " +
+			"with transport 'rpc' — in 'print' mode pi reads nothing while it works.\n" +
+			"`steer` interrupts the current turn with the message; `follow_up` queues it for after the " +
+			"turn finishes; `abort` stops the turn. These are pi's own rpc commands, passed through " +
+			"unchanged — this server never sends anything on its own initiative.\n" +
+			"Use `pi_running` to see which sessions can be reached.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				session: {
+					type: "string",
+					description: "Session id of the running turn, as returned by `pi` or `pi_reply`.",
+				},
+				message: {
+					type: "string",
+					description: "Text to send. Required for 'steer' and 'follow_up', ignored by 'abort'.",
+				},
+				command: {
+					type: "string",
+					enum: ["steer", "follow_up", "abort"],
+					description: "Which pi rpc command to send. Defaults to 'steer'.",
+				},
+			},
+			required: ["session"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "pi_running",
+		description:
+			"List pi turns that are executing right now, with their session id, working directory, how " +
+			"long they have been going, and any messages already sent into them. Only rpc-transport runs " +
+			"appear, because only those can be reached mid-run.",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	},
+	{
 		name: "pi_sessions",
 		description:
 			"List pi sessions started through this server, newest first, with their working directory. " +
@@ -203,32 +241,6 @@ function readOverrides(input: Record<string, unknown>): RunOverrides {
 	return overrides;
 }
 
-function overrideArgs(overrides: RunOverrides): string[] {
-	const args: string[] = [];
-	if (overrides.model) args.push("--model", overrides.model);
-	if (overrides.thinking) args.push("--thinking", overrides.thinking);
-	if (overrides.no_tools) args.push("--no-tools");
-	else if (overrides.tools) args.push("--tools", overrides.tools);
-	if (overrides.system_prompt_append) args.push("--append-system-prompt", overrides.system_prompt_append);
-	return args;
-}
-
-/** The argv tail carrying the prompt, plus cleanup for any temp file. */
-function promptArgs(prompt: string): { args: string[]; cleanup: () => void } {
-	// pi has no `--` separator, so a dash-leading prompt would parse as a flag;
-	// and argv has an OS size limit.
-	if (!prompt.startsWith("-") && prompt.length <= ARGV_PROMPT_LIMIT) {
-		return { args: [prompt], cleanup: () => {} };
-	}
-	const dir = mkdtempSync(join(tmpdir(), "pi-mcp-"));
-	const file = join(dir, "prompt.md");
-	writeFileSync(file, prompt, { mode: 0o600 });
-	return {
-		args: [`@${file}`, "Your task is the full contents of the attached file. Follow it exactly."],
-		cleanup: () => rmSync(dir, { recursive: true, force: true }),
-	};
-}
-
 function readPrompt(value: unknown, tool: string): string {
 	if (typeof value !== "string" || value.trim() === "") {
 		throw new Error(`${tool}: \`prompt\` is required and must be a non-empty string.`);
@@ -248,21 +260,12 @@ interface Outcome {
 	elapsedMs: number;
 }
 
-async function invokePi(
-	args: string[],
-	cwd: string,
-	ctx: CallContext,
-	timeoutMs: number | undefined,
-): Promise<Outcome> {
+async function invokePi(transport: Transport, plan: RunPlan, ctx: CallContext): Promise<Outcome> {
 	const acc = newAccumulator();
 	const started = Date.now();
-	const result = await runPi(args, cwd, {
-		token: ctx.token,
-		timeoutMs,
-		onEvent: (event) => {
-			const note = accumulate(acc, event);
-			if (note && ctx.progress) ctx.progress(note);
-		},
+	const result = await transport.run(plan, ctx, (event) => {
+		const note = accumulate(acc, event);
+		if (note && ctx.progress) ctx.progress(note);
 	});
 	return { acc, result, elapsedMs: Date.now() - started };
 }
@@ -307,11 +310,13 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	let cwd: string;
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
+	let transport: Transport;
 	try {
 		prompt = readPrompt(input.prompt, "pi");
 		cwd = resolveCwd(input.cwd);
 		overrides = readOverrides(input);
 		timeoutMs = readTimeout(input.timeout_ms);
+		transport = resolveTransport(input.transport);
 	} catch (err) {
 		return toolResult(`pi: ${(err as Error).message}`.replace("pi: pi:", "pi:"), true);
 	}
@@ -323,15 +328,8 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	// unreachable.
 	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
 
-	const { args: tail, cleanup } = promptArgs(prompt);
-	const args = ["-p", "--mode", "json", "--session-id", sessionId, ...overrideArgs(overrides), ...tail];
-
-	let outcome: Outcome;
-	try {
-		outcome = await withSlot(() => invokePi(args, cwd, ctx, timeoutMs));
-	} finally {
-		cleanup();
-	}
+	const plan: RunPlan = { cwd, sessionId, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
+	const outcome = await withSlot(() => invokePi(transport, plan, ctx));
 
 	if (outcome.result.code !== 0) {
 		return toolResult(
@@ -358,6 +356,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	let cwd: string;
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
+	let transport: Transport;
 	try {
 		prompt = readPrompt(input.prompt, "pi_reply");
 		cwd = resolveCwd(input.cwd ?? known?.cwd);
@@ -367,19 +366,13 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 			thinking: input.thinking ?? known?.thinking,
 		});
 		timeoutMs = readTimeout(input.timeout_ms);
+		transport = resolveTransport(input.transport);
 	} catch (err) {
 		return toolResult(`pi_reply: ${(err as Error).message}`.replace("pi_reply: pi_reply:", "pi_reply:"), true);
 	}
 
-	const { args: tail, cleanup } = promptArgs(prompt);
-	const args = ["-p", "--mode", "json", "--session-id", session, ...overrideArgs(overrides), ...tail];
-
-	let outcome: Outcome;
-	try {
-		outcome = await withSessionLock(session, () => withSlot(() => invokePi(args, cwd, ctx, timeoutMs)));
-	} finally {
-		cleanup();
-	}
+	const plan: RunPlan = { cwd, sessionId: session, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
+	const outcome = await withSessionLock(session, () => withSlot(() => invokePi(transport, plan, ctx)));
 
 	if (outcome.result.code !== 0) {
 		// Keep the session current even on failure: the conversation on disk grew,
@@ -426,6 +419,71 @@ export async function callPiModels(input: Record<string, unknown>, ctx: CallCont
 		return toolResult(search ? `No pi models match "${search}".` : "pi reported no available models.", true);
 	}
 	return toolResult(table);
+}
+
+/**
+ * Pass one of pi's rpc commands into a running turn. The decision to send, what
+ * to send, and when, all belong to the caller; this only carries the message.
+ */
+export function callPiSend(input: Record<string, unknown>): ToolResult {
+	const session = input.session;
+	if (typeof session !== "string" || session.trim() === "") {
+		return toolResult("pi_send: `session` is required.", true);
+	}
+
+	const command = input.command ?? "steer";
+	if (command !== "steer" && command !== "follow_up" && command !== "abort") {
+		return toolResult(`pi_send: \`command\` must be steer, follow_up, or abort (got ${String(command)}).`, true);
+	}
+
+	const message = input.message;
+	if (command !== "abort" && (typeof message !== "string" || message.trim() === "")) {
+		return toolResult(`pi_send: \`message\` is required for ${command}.`, true);
+	}
+	if (message !== undefined && typeof message !== "string") {
+		return toolResult("pi_send: `message` must be a string.", true);
+	}
+
+	const run = getRun(session);
+	if (run === undefined) {
+		const alive = listRuns();
+		const hint =
+			alive.length === 0
+				? "No pi turn is running under the rpc transport right now."
+				: `Running sessions: ${alive.map((r) => r.sessionId).join(", ")}.`;
+		return toolResult(
+			`pi_send: session ${session} is not currently running, so there is nothing to send to. ${hint}\n` +
+				"A finished session is continued with pi_reply instead. Only runs started with " +
+				"transport 'rpc' can be reached mid-run.",
+			true,
+		);
+	}
+
+	run.handle.send(command === "abort" ? { type: "abort" } : { type: command, message });
+	run.sent.push({ at: Date.now(), type: String(command) });
+
+	const elapsed = ((Date.now() - run.startedAt) / 1000).toFixed(1);
+	return toolResult(
+		`Sent ${command} to session ${session} (running for ${elapsed}s).\n` +
+			"pi decides when to act on it; the result appears in the answer of the call that is still " +
+			"waiting on this turn.",
+	);
+}
+
+export function callPiRunning(): ToolResult {
+	const runs = listRuns();
+	if (runs.length === 0) {
+		return toolResult(
+			"No pi turn is running under the rpc transport. Runs started with transport 'print' do not " +
+				"appear here — pi reads nothing while it works in that mode.",
+		);
+	}
+	const rows = runs.map((run) => {
+		const elapsed = ((Date.now() - run.startedAt) / 1000).toFixed(1);
+		const sent = run.sent.length > 0 ? ` sent: ${run.sent.map((s) => s.type).join(",")}` : "";
+		return `${run.sessionId}  ${elapsed}s  ${run.cwd}${sent}`;
+	});
+	return toolResult(`${rows.length} running:\n\n${rows.join("\n")}`);
 }
 
 export function callPiSessions(): ToolResult {

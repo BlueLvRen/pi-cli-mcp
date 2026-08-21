@@ -13,12 +13,26 @@ export interface RunResult {
 	cancelled?: boolean;
 }
 
+/** Writing side of a running pi process, for transports that talk back. */
+export interface PiHandle {
+	/** Send one JSONL command on stdin. No-op once the process is gone. */
+	send(command: unknown): void;
+	/** Close stdin, which is how pi's rpc mode is asked to shut down. */
+	endInput(): void;
+}
+
 export interface RunOptions {
-	/** Called for each parsed JSON line of pi's `--mode json` stream. */
+	/** Called for each parsed JSON line of pi's stdout stream. */
 	onEvent?: (event: unknown) => void;
 	token?: CancelToken | undefined;
 	/** Overrides the default wall clock for this run. */
 	timeoutMs?: number | undefined;
+	/**
+	 * Open stdin as a pipe and hand the caller a writer. Print mode leaves stdin
+	 * closed; rpc mode needs it to send commands.
+	 */
+	onStart?: (handle: PiHandle) => void;
+	stdin?: "ignore" | "pipe";
 }
 
 /**
@@ -126,7 +140,7 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 			// the signal itself.
 			child = spawn(command, argv, {
 				cwd,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: [options.stdin ?? "ignore", "pipe", "pipe"],
 				env: process.env,
 				detached: true,
 			});
@@ -166,6 +180,23 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 		liveTrees.add(signalTree);
 		const timer = setTimeout(() => stop("timeout"), timeoutMs);
 		const unsubscribe = token?.subscribe(() => stop("cancelled")) ?? ((): void => {});
+
+		if (options.onStart) {
+			options.onStart({
+				send: (payload: unknown) => {
+					// A closed or dead stdin is not an error here: the run may have
+					// settled or been killed between deciding to write and writing.
+					if (child.stdin === null || child.stdin.destroyed || child.stdin.writableEnded) return;
+					child.stdin.write(`${JSON.stringify(payload)}\n`, (err) => {
+						if (err) process.stderr.write(`pi-mcp: could not write to pi stdin: ${err.message}\n`);
+					});
+				},
+				endInput: () => {
+					if (child.stdin === null || child.stdin.writableEnded) return;
+					child.stdin.end();
+				},
+			});
+		}
 
 		const consumeLine = (line: string): void => {
 			const trimmed = line.trim();

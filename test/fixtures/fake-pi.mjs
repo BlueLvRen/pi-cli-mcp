@@ -33,9 +33,11 @@ if (process.env.FAKE_STARTED_FILE) {
 	appendFileSync(process.env.FAKE_STARTED_FILE, `${process.pid}\n`);
 }
 
-// `pi --list-models` is a utility flag, not an agent run: emit the table and
-// stop. This must not fall through into the event stream below.
-if (process.argv.includes("--list-models")) {
+// `--mode rpc`: pi stays up, reads JSONL commands on stdin, and ends the turn
+// with agent_settled. Modelled on pi's own rpc-types.ts.
+if (process.argv.includes("rpc")) {
+	await runRpc();
+} else if (process.argv.includes("--list-models")) {
 	const filter = process.argv[process.argv.indexOf("--list-models") + 1];
 	const rows = [
 		"provider  model                 context  max-out  thinking  images",
@@ -242,6 +244,73 @@ async function runAgent() {
 	out({ type: "agent_end", willRetry: false });
 	out({ type: "agent_settled" });
 	process.exitCode = exitCode;
+}
+
+/**
+ * The rpc side of the fake: read JSONL commands, answer them, and only settle
+ * the turn when told to. FAKE_RPC_SETTLE_MS settles on its own after a delay;
+ * without it the turn waits for a steer or an abort, which is what the mid-run
+ * message tests need.
+ */
+async function runRpc() {
+	out({ type: "session", id: "fake-session", cwd: process.cwd() });
+	out({ type: "agent_start" });
+
+	const settleMs = process.env.FAKE_RPC_SETTLE_MS;
+	let settled = false;
+	const received = [];
+
+	const settle = (text) => {
+		if (settled) return;
+		settled = true;
+		out({ type: "turn_start" });
+		finalMessage(text);
+		out({ type: "agent_end", willRetry: false });
+		out({ type: "agent_settled" });
+	};
+
+	let buffer = "";
+	process.stdin.setEncoding("utf8");
+	process.stdin.on("data", (chunk) => {
+		buffer += chunk;
+		let nl = buffer.indexOf("\n");
+		while (nl !== -1) {
+			const line = buffer.slice(0, nl).trim();
+			buffer = buffer.slice(nl + 1);
+			nl = buffer.indexOf("\n");
+			if (!line) continue;
+
+			let cmd;
+			try {
+				cmd = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			received.push(cmd.type);
+			out({ type: "response", command: cmd.type, success: true });
+
+			if (cmd.type === "prompt") {
+				out({ type: "turn_start" });
+				if (settleMs) setTimeout(() => settle("RPC ANSWER"), Number(settleMs));
+				else spawnMarkedChild();
+			} else if (cmd.type === "steer") {
+				// A steered turn reports what it was told, so the test can prove the
+				// message reached a turn that was already running.
+				settle(`STEERED: ${cmd.message}`);
+			} else if (cmd.type === "follow_up") {
+				settle(`FOLLOW_UP QUEUED: ${cmd.message}`);
+			} else if (cmd.type === "abort") {
+				settle("ABORTED");
+			}
+		}
+	});
+	process.stdin.on("end", () => {
+		process.exitCode = exitCode;
+		// Mirrors pi: closing stdin is how rpc mode is asked to exit.
+		setTimeout(() => process.exit(exitCode), 20);
+	});
+	// Keep the process alive while it waits for commands.
+	setInterval(() => {}, 1000);
 }
 
 /**

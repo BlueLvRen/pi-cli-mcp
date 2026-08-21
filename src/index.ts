@@ -9,7 +9,16 @@
 import { FALLBACK_PROTOCOL, KILL_GRACE_MS, MAX_FRAME, PROTOCOL_VERSIONS, SERVER_INFO } from "./config.ts";
 import { killAllTrees, makeCancelToken, treeCount } from "./pi-process.ts";
 import { loadSessions } from "./sessions.ts";
-import { callPi, callPiModels, callPiReply, callPiSessions, TOOLS, toolResult } from "./tools.ts";
+import {
+	callPi,
+	callPiModels,
+	callPiReply,
+	callPiRunning,
+	callPiSend,
+	callPiSessions,
+	TOOLS,
+	toolResult,
+} from "./tools.ts";
 import type { CallContext, CancelToken, JsonRpcId, JsonRpcMessage, ToolResult } from "./types.ts";
 
 function send(message: unknown): void {
@@ -63,6 +72,8 @@ async function dispatchTool(
 	if (name === "pi") return callPi(args, ctx);
 	if (name === "pi_reply") return callPiReply(args, ctx);
 	if (name === "pi_models") return callPiModels(args, ctx);
+	if (name === "pi_send") return callPiSend(args);
+	if (name === "pi_running") return callPiRunning();
 	if (name === "pi_sessions") return callPiSessions();
 	return null;
 }

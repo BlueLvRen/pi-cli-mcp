@@ -29,7 +29,7 @@ describe("handshake", () => {
 		client.close();
 	});
 
-	it("exposes exactly the four tools", async () => {
+	it("exposes exactly its tools", async () => {
 		const client = new Client(ws.env, ws.dir);
 		await client.handshake();
 		const list = await client.call("tools/list");
@@ -37,6 +37,8 @@ describe("handshake", () => {
 			"pi",
 			"pi_models",
 			"pi_reply",
+			"pi_running",
+			"pi_send",
 			"pi_sessions",
 		]);
 		client.close();

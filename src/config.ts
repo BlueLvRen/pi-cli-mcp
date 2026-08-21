@@ -71,6 +71,13 @@ export const STATE_FILE = process.env.PI_MCP_STATE ?? join(homedir(), ".local", 
 export const DEFAULT_MODEL = process.env.PI_MCP_MODEL ?? null;
 export const DEFAULT_THINKING = process.env.PI_MCP_THINKING ?? null;
 
+/**
+ * Which way to drive pi when a call does not say: `print` (`pi -p --mode json`,
+ * one process per turn) or `rpc` (`pi --mode rpc`, process stays up and accepts
+ * commands on stdin, so a running turn can be sent a message).
+ */
+export const DEFAULT_TRANSPORT = process.env.PI_MCP_TRANSPORT === "rpc" ? "rpc" : "print";
+
 /** argv has an OS size limit; longer prompts go through a temp file instead. */
 export const MAX_PROMPT = 2_000_000;
 export const ARGV_PROMPT_LIMIT = 100_000;

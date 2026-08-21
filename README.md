@@ -53,6 +53,8 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | `pi` | Start a pi session. Returns `[session: <uuid>]`, the answer, and stats. |
 | `pi_reply` | Continue a session by id. pi still holds the prior turns. |
 | `pi_models` | List reachable models (provider, id, context, max output, thinking, images). |
+| `pi_send` | Send a message into a turn that is running right now (`rpc` transport only). |
+| `pi_running` | List turns executing right now and reachable by `pi_send`. |
 | `pi_sessions` | List known sessions, newest first, with their working directory. |
 
 ### `pi`
@@ -129,6 +131,56 @@ them. The state file is written with re-read-then-merge, so sessions learned by 
 erased by the other, but the underlying pi session file has no such protection. In practice one
 client owns a session; if you need a hard guarantee, keep one server process.
 
+## Transports
+
+Two ways to drive pi, behind one interface. Everything downstream — the event
+accumulator, answer selection, the stats line, failure reporting — is shared, so
+the choice changes only how pi is launched and what is possible during a run.
+
+| | `print` (default) | `rpc` |
+|---|---|---|
+| command | `pi -p --mode json` | `pi --mode rpc` |
+| process | one per turn, exits when done | stays up, reads JSONL commands on stdin |
+| mid-run message | impossible: pi reads nothing while working | `pi_send` |
+| prompt delivery | argv, with a temp file for long or dash-leading prompts | inside the command, no argv limit |
+
+Pick per call with `transport`, or set the default with `PI_MCP_TRANSPORT=rpc`.
+
+### Reaching a running turn
+
+`pi --mode rpc` accepts commands while it works. That is the whole reason the
+transport exists, and it is exposed as pi's commands, unchanged:
+
+```js
+pi({ prompt: "long task…", cwd: "/repo", transport: "rpc" })   // still running
+
+pi_running()
+// 1 running:
+// 5aef3387-…  8.0s  /repo
+
+pi_send({ session: "5aef3387-…", message: "stop and report what you have" })
+// Sent steer to session 5aef3387-… (running for 8.1s).
+```
+
+The answer appears in the call that is still waiting on that turn:
+
+```
+[session: 5aef3387-…]
+
+STEERED_LIVE
+
+---
+pi: bifrost/agnes/agnes-2.5-flash · 3 turns · 3 tool calls: bash×3 · 23k in / 207 out · 46.6s
+```
+
+`command` selects which pi command to pass: `steer` (default, interrupts the
+current turn), `follow_up` (queues for after it), `abort` (stops it).
+
+**This server never sends anything on its own.** There is no automatic "please
+wrap up" before a deadline, no injected instructions: `pi_send` fires only when
+the caller calls it. What to send, and whether to send at all, is a decision the
+adapter has no business making.
+
 ## When a run dies
 
 A run killed by its deadline, by cancellation, or by a non-zero exit is not a
@@ -204,6 +256,7 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_KILL_GRACE_MS` | `5000` | SIGTERM → SIGKILL grace period. |
 | `PI_MCP_STATE` | `~/.local/state/pi-mcp/sessions.json` | Session → cwd map. |
 | `PI_MCP_WRAP` | unset | Command prefix, e.g. `sandbox-exec -f profile.sb`. |
+| `PI_MCP_TRANSPORT` | `print` | Default transport: `print` or `rpc`. |
 
 ## Design
 
