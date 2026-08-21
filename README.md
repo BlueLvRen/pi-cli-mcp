@@ -319,6 +319,9 @@ npm run fix            # biome --write
 PI_CLI_MCP_LIVE=1 npm test   # also exercise the real pi binary
 ```
 
+Procedures live in [`.agents/skills/`](.agents/skills/): `release`, `validation`, `pi-contract`,
+`testing`. They carry the reasons behind the setup below, including what has already gone wrong.
+
 `npm run hooks` points `core.hooksPath` at `.githooks/`. pre-commit runs Biome and
 rejects a `package-lock.json` that has drifted from `package.json` — `npm ci` accepts such a lock,
 so nothing else catches it; this repo's lock had been stale since the TypeScript migration.
