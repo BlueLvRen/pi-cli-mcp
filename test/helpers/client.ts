@@ -11,6 +11,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const SERVER = join(here, "..", "..", "src", "index.ts");
 export const FAKE_PI = join(here, "..", "fixtures", "fake-pi.mjs");
 
+/**
+ * Node 22 needs a flag to run TypeScript; from 23 onwards type stripping is on
+ * by default and the flag is deprecated. CI runs a newer Node than this
+ * workstation, so the flag is added only where it is actually required.
+ */
+const NODE_TS_FLAGS = Number(process.versions.node.split(".")[0] ?? 0) >= 23 ? [] : ["--experimental-strip-types"];
+
 export interface JsonRpcResponse {
 	id?: unknown;
 	result?: any;
@@ -36,7 +43,7 @@ export class Client {
 	private nextId = 1;
 
 	constructor(env: Record<string, string> = {}, cwd: string = process.cwd()) {
-		this.child = spawn(process.execPath, ["--experimental-strip-types", SERVER], {
+		this.child = spawn(process.execPath, [...NODE_TS_FLAGS, SERVER], {
 			cwd,
 			env: { ...process.env, ...env },
 			stdio: ["pipe", "pipe", "pipe"],
