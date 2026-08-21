@@ -1,6 +1,6 @@
 {
 	"name": "pi-cli-mcp",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"description": "MCP server that delegates coding tasks to your locally installed pi CLI. Wraps the real binary instead of bundling its own copy of the agent, so it inherits your providers, models and extensions. Sessions survive restarts, calls are cancellable, and each run reports tools used, tokens and cost.",
 	"type": "module",
 	"bin": {

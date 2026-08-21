@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -93,6 +94,23 @@ export const DEFAULT_TRANSPORT = process.env.PI_MCP_TRANSPORT === "print" ? "pri
 export const MAX_PROMPT = 2_000_000;
 export const ARGV_PROMPT_LIMIT = 100_000;
 
-export const SERVER_INFO = { name: "pi", version: "0.4.0" } as const;
+/**
+ * Reported in the MCP handshake. Read from the manifest rather than repeated
+ * here: a second copy is a second thing to forget on release, and it lands in
+ * the one place a client actually looks. The path resolves the same from `src/`
+ * and from the built `dist/`, both being one level below the package root.
+ */
+function readVersion(): string {
+	try {
+		const manifest = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+		const version = (JSON.parse(manifest) as { version?: unknown }).version;
+		if (typeof version === "string") return version;
+	} catch {
+		// Unreadable manifest is not worth failing a handshake over.
+	}
+	return "0.0.0";
+}
+
+export const SERVER_INFO = { name: "pi", version: readVersion() } as const;
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
 export const FALLBACK_PROTOCOL = "2025-06-18";
