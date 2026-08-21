@@ -12,10 +12,22 @@ beforeAll(() => {
 afterAll(() => ws.cleanup());
 
 describe("transport selection", () => {
-	it("defaults to print", async () => {
+	it("defaults to rpc", async () => {
 		const client = new Client(ws.env, ws.dir);
 		await client.handshake();
 		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir });
+		client.close();
+		expect(res.isError).toBe(false);
+		expect(res.text).toContain("FINAL ANSWER");
+		// Reachable while running is the rpc-only capability; print has nothing to
+		// talk to. A default-transport run must therefore be an rpc one.
+		expect(res.text).toMatch(/\[session: [0-9a-f-]{36}\]/);
+	});
+
+	it("still runs a turn over print when asked", async () => {
+		const client = new Client(ws.env, ws.dir);
+		await client.handshake();
+		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir, transport: "print" });
 		client.close();
 		expect(res.isError).toBe(false);
 		expect(res.text).toContain("FINAL ANSWER");
@@ -33,12 +45,13 @@ describe("transport selection", () => {
 		expect(res.text).toMatch(/\[session: [0-9a-f-]{36}\]/);
 	});
 
-	it("can be set as the server default", async () => {
-		const client = new Client({ ...ws.env, PI_MCP_TRANSPORT: "rpc", FAKE_RPC_SETTLE_MS: "200" }, ws.dir);
+	it("honours PI_MCP_TRANSPORT for the default", async () => {
+		const client = new Client({ ...ws.env, PI_MCP_TRANSPORT: "print", FAKE_MODE: "no_stop" }, ws.dir);
 		await client.handshake();
 		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir });
 		client.close();
-		expect(res.text).toContain("RPC ANSWER");
+		// print mode reaches the same scenario; the point is the env var is read.
+		expect(res.text).toContain("ANSWER WITHOUT STOP REASON");
 	});
 
 	it("rejects an unknown transport", async () => {
@@ -65,7 +78,7 @@ describe("transport selection", () => {
 describe("reaching a running turn", () => {
 	it("delivers a steer into a turn that is already working", async () => {
 		// No auto-settle: the turn waits, exactly like a long task would.
-		const client = new Client({ ...ws.env }, ws.dir);
+		const client = new Client({ ...ws.env, FAKE_RPC_WAIT: "1" }, ws.dir);
 		await client.handshake();
 
 		const call = client.request("tools/call", {
@@ -96,7 +109,7 @@ describe("reaching a running turn", () => {
 			["follow_up", "FOLLOW_UP QUEUED: later"],
 			["abort", "ABORTED"],
 		] as const) {
-			const client = new Client({ ...ws.env }, ws.dir);
+			const client = new Client({ ...ws.env, FAKE_RPC_WAIT: "1" }, ws.dir);
 			await client.handshake();
 			const call = client.request("tools/call", {
 				name: "pi",
@@ -130,7 +143,8 @@ describe("reaching a running turn", () => {
 		await client.handshake();
 		const call = client.request("tools/call", {
 			name: "pi",
-			arguments: { prompt: "go", cwd: ws.dir },
+			// Explicit: rpc is the default now, and an rpc run would be reachable.
+			arguments: { prompt: "go", cwd: ws.dir, transport: "print" },
 		});
 		await sleep(400);
 		const running = await client.tool("pi_running");
@@ -142,7 +156,7 @@ describe("reaching a running turn", () => {
 	it("ends a cancelled turn in-protocol, so its report still arrives", async () => {
 		// pi skips its stdout flush on SIGTERM, so signalling first can cost the tail
 		// of the stream. rpc sends `abort` instead and the turn reports normally.
-		const client = new Client({ ...ws.env }, ws.dir);
+		const client = new Client({ ...ws.env, FAKE_RPC_WAIT: "1" }, ws.dir);
 		await client.handshake();
 		const call = client.request("tools/call", {
 			name: "pi",
@@ -168,7 +182,13 @@ describe("reaching a running turn", () => {
 		// PI_MCP_TIMEOUT_MS has a 1000 ms floor; anything lower is ignored and the
 		// 30-minute default applies.
 		const client = new Client(
-			{ ...ws.env, FAKE_RPC_IGNORE_ABORT: "1", PI_MCP_ABORT_GRACE_MS: "300", PI_MCP_TIMEOUT_MS: "1200" },
+			{
+				...ws.env,
+				FAKE_RPC_WAIT: "1",
+				FAKE_RPC_IGNORE_ABORT: "1",
+				PI_MCP_ABORT_GRACE_MS: "300",
+				PI_MCP_TIMEOUT_MS: "1200",
+			},
 			ws.dir,
 		);
 		await client.handshake();

@@ -28,28 +28,30 @@ const SHARED_PROPS = {
 	model: {
 		type: "string",
 		description:
-			"Model pattern or id, e.g. 'bifrost/minimax/MiniMax-M3', 'sonnet', 'provider/id:thinking'. " +
-			"Defaults to your pi settings.",
+			"Model pattern or id, e.g. 'sonnet', 'bifrost/minimax/MiniMax-M3', 'provider/id:thinking'. " +
+			"Defaults to pi's own settings; pi_models lists valid values.",
 	},
 	thinking: {
 		type: "string",
 		enum: THINKING_LEVELS,
-		description: "Thinking level. Defaults to your pi settings.",
+		description:
+			"Thinking level. No-op on models without thinking support (check pi_models). Defaults to pi's " +
+			"own settings.",
 	},
 	transport: {
 		type: "string",
 		enum: TRANSPORT_NAMES,
 		description:
-			"How to drive pi. 'print' (default) runs one process per turn. 'rpc' keeps pi up and lets " +
-			"pi_send deliver a message into the turn while it runs.",
+			"Usually omit. The default 'rpc' keeps pi up, so a running turn can be steered or aborted with " +
+			"pi_send. 'print' runs one process per turn that cannot be reached while it works.",
 	},
 	timeout_ms: {
 		type: "integer",
 		minimum: 1000,
 		description:
-			"Wall clock for this run before pi is killed. Set it from the task, not from habit: a run " +
-			"killed at the deadline still returns its session id and what pi did, so a long task can be " +
-			"continued with pi_reply rather than restarted.",
+			"Usually omit — the server default is generous. Override only when the task's real size " +
+			"demands it. A run killed at the deadline is not lost: it still returns its session id and is " +
+			"resumable with pi_reply.",
 	},
 } as const;
 
@@ -57,38 +59,39 @@ export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi",
 		description:
-			"Delegate a task to the local pi agent — a separate CLI coding agent with its own " +
-			"read/bash/edit/write tools and its own context window. Runs non-interactively and returns " +
-			"pi's final answer prefixed with [session: <id>] for follow-ups via pi_reply.\n" +
-			"Good for: a second opinion from a different model, work you want kept out of this context, " +
-			"or parallel investigation.\n" +
-			"Caution: pi has no permission system. With its default tools it can edit files and run " +
-			"shell commands as your user inside `cwd`. Pass `tools` or `no_tools` to restrict it.",
+			"Start a NEW task in the local pi agent — a separate CLI coding agent with its own " +
+			"read/bash/edit/write tools and its own context window. Blocks until pi settles, then returns " +
+			"only its final answer plus stats, prefixed [session: <id>]; continue that session later with " +
+			"pi_reply.\n" +
+			"Good for: a second opinion from a different model, work kept out of this context, or parallel " +
+			"investigation.\n" +
+			"Caution: pi has no permission system. With its default tools it edits files and runs shell " +
+			"commands as your user inside `cwd`. For analysis-only work pass `tools` or `no_tools`.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				prompt: {
 					type: "string",
 					description:
-						"The task for pi. Must be self-contained — pi cannot see this conversation. State the " +
-						"files, the goal, and the expected output format.",
+						"The complete task. pi cannot see this conversation, so include everything it needs: " +
+						"file paths, goal, constraints, expected output format.",
 				},
 				cwd: {
 					type: "string",
 					description:
-						"Absolute working directory. Defaults to this server's cwd. pi reads AGENTS.md / " +
-						"CLAUDE.md from here.",
+						"Usually omit to use this server's cwd. If set, must be an absolute path (relative is " +
+						"rejected). pi works and edits here, and reads AGENTS.md / CLAUDE.md from here.",
 				},
 				...SHARED_PROPS,
 				tools: {
 					type: "string",
 					description:
-						"Comma-separated allowlist of pi tool names, e.g. 'read,grep,ls' for a read-only run. " +
-						"Omit to keep pi's default set (includes bash/edit/write).",
+						"Usually omit to keep pi's default set (includes bash/edit/write). Set a comma-separated " +
+						"allowlist of pi tool names only to restrict, e.g. 'read,grep,ls' for a read-only run.",
 				},
 				no_tools: {
 					type: "boolean",
-					description: "Disable all pi tools — pure reasoning over the prompt text.",
+					description: "Disable all pi tools: pure reasoning over the prompt, no file or shell access.",
 				},
 				system_prompt_append: {
 					type: "string",
@@ -102,17 +105,22 @@ export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi_reply",
 		description:
-			"Continue an existing pi session. Pass the id returned as [session: <id>]. pi still has the " +
-			"prior turns, so the follow-up can be short. Sessions live in pi's own session files and " +
-			"survive restarts of this server.",
+			"Send a new turn to an existing pi session that is not executing right now — including one " +
+			"that timed out or was cancelled: the session survives, so resume it here instead of " +
+			"restarting with `pi`. pi still has its prior turns (but never this conversation), so the " +
+			"follow-up can be short. Survives restarts of this server. For a turn still running under " +
+			"'rpc', use pi_send instead.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				session: { type: "string", description: "Session id from a previous pi call." },
-				prompt: { type: "string", description: "Follow-up message." },
+				session: {
+					type: "string",
+					description: "Session id from a [session: <id>] prefix, or from pi_sessions.",
+				},
+				prompt: { type: "string", description: "Follow-up message for this session." },
 				cwd: {
 					type: "string",
-					description: "Override the working directory. Defaults to where the session started.",
+					description: "Absolute path override. Defaults to the directory where the session started.",
 				},
 				...SHARED_PROPS,
 			},
@@ -123,10 +131,9 @@ export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi_models",
 		description:
-			"List the models pi can actually reach, as a table of provider, model id, context window, " +
-			"max output, thinking and image support. Read from the live catalog, so it reflects what is " +
-			"configured right now rather than any documented list. Use it to pick a value for the " +
-			"`model` argument of `pi`.",
+			"List the models pi can actually reach right now — provider, model id, context window, max " +
+			"output, thinking and image support — read from the live catalog. Use it to pick `model` and " +
+			"`thinking` values for `pi` / `pi_reply`. Starts no session, runs no task.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -141,27 +148,27 @@ export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi_send",
 		description:
-			"Send a message into a pi turn that is running right now. Only possible for runs started " +
-			"with transport 'rpc' — in 'print' mode pi reads nothing while it works.\n" +
-			"`steer` interrupts the current turn with the message; `follow_up` queues it for after the " +
-			"turn finishes; `abort` stops the turn. These are pi's own rpc commands, passed through " +
-			"unchanged — this server never sends anything on its own initiative.\n" +
-			"Use `pi_running` to see which sessions can be reached.",
+			"Deliver a message into a pi turn that is executing right now. Works only on runs started " +
+			"with transport 'rpc' — 'print' runs cannot be reached, and a session that already finished " +
+			"takes pi_reply, not pi_send. Returns immediately; pi's reaction appears in the answer of the " +
+			"pi/pi_reply call still waiting on that turn. `pi_running` lists reachable sessions.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				session: {
 					type: "string",
-					description: "Session id of the running turn, as returned by `pi` or `pi_reply`.",
+					description: "Session id of the running turn (see pi_running).",
 				},
 				message: {
 					type: "string",
-					description: "Text to send. Required for 'steer' and 'follow_up', ignored by 'abort'.",
+					description: "Text to deliver. Required for 'steer' and 'follow_up', ignored by 'abort'.",
 				},
 				command: {
 					type: "string",
 					enum: ["steer", "follow_up", "abort"],
-					description: "Which pi rpc command to send. Defaults to 'steer'.",
+					description:
+						"'steer' (default) interrupts the current turn with the message; 'follow_up' queues it " +
+						"for after the turn finishes; 'abort' stops the turn. Passed to pi unchanged.",
 				},
 			},
 			required: ["session"],
@@ -171,16 +178,17 @@ export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi_running",
 		description:
-			"List pi turns that are executing right now, with their session id, working directory, how " +
-			"long they have been going, and any messages already sent into them. Only rpc-transport runs " +
-			"appear, because only those can be reached mid-run.",
+			"List pi turns executing at this moment — the ones pi_send can reach — with session id, " +
+			"working directory, elapsed time, and messages already sent in. Only rpc-transport runs " +
+			"appear; 'print' runs are unreachable mid-run. For past sessions use pi_sessions.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 	},
 	{
 		name: "pi_sessions",
 		description:
-			"List pi sessions started through this server, newest first, with their working directory. " +
-			"Use it to find an id for pi_reply when it has scrolled out of context.",
+			"List all pi sessions started through this server, newest first, with their working " +
+			"directory — running or finished, including runs that timed out. Use it to recover an id for " +
+			"pi_reply. For turns still executing (pi_send targets), use pi_running.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 	},
 ];

@@ -29,6 +29,14 @@ const stop = process.env.FAKE_STOP ?? "stop";
 const exitCode = Number(process.env.FAKE_EXIT ?? 0);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Set by the scenarios that are supposed to never finish. They return as soon as
+ * their timers are armed, so without this flag the rpc path would treat "the
+ * scenario function returned" as "the turn is over" and exit — turning a hang
+ * into a clean, instant exit.
+ */
+let holding = false;
+
 if (process.env.FAKE_STARTED_FILE) {
 	appendFileSync(process.env.FAKE_STARTED_FILE, `${process.pid}\n`);
 }
@@ -53,6 +61,12 @@ if (process.argv.includes("rpc")) {
 }
 
 async function runAgent() {
+	out({ type: "session", id: "fake-session", cwd: process.cwd() });
+	out({ type: "agent_start" });
+	await runScenario();
+}
+
+async function runScenario() {
 	// Real pi prints this on stderr when --session-id names a session it does not
 	// have; the server turns it into an explicit warning instead of pretending the
 	// conversation continued.
@@ -83,10 +97,8 @@ async function runAgent() {
 		return;
 	}
 
-	out({ type: "session", id: "fake-session", cwd: process.cwd() });
-	out({ type: "agent_start" });
-
 	if (mode === "hang") {
+		holding = true;
 		out({ type: "turn_start" });
 		// A child of its own, to assert the whole tree dies with the parent.
 		spawnMarkedChild();
@@ -115,6 +127,7 @@ async function runAgent() {
 		out({ type: "tool_execution_start", toolName: "write" });
 		out({ type: "tool_execution_end", toolName: "write", isError: false });
 		out({ type: "turn_start" });
+		holding = true;
 		spawnMarkedChild();
 		setInterval(() => {}, 1000);
 		return;
@@ -183,6 +196,18 @@ async function runAgent() {
 		return;
 	}
 
+	if (mode === "child_then_answer") {
+		// Leaves a detached grandchild behind and then answers normally — a pi that
+		// does not clean up after itself. The server must not rely on it doing so.
+		out({ type: "turn_start" });
+		spawnMarkedChild();
+		finalMessage("ANSWERED WITH CHILD LEFT");
+		out({ type: "agent_end", willRetry: false });
+		out({ type: "agent_settled" });
+		process.exitCode = exitCode;
+		return;
+	}
+
 	if (mode === "no_stop") {
 		out({ type: "turn_start" });
 		out({
@@ -247,10 +272,12 @@ async function runAgent() {
 }
 
 /**
- * The rpc side of the fake: read JSONL commands, answer them, and only settle
- * the turn when told to. FAKE_RPC_SETTLE_MS settles on its own after a delay;
- * without it the turn waits for a steer or an abort, which is what the mid-run
- * message tests need.
+ * The rpc side of the fake: read JSONL commands and answer them.
+ *
+ * On `prompt` it plays the same FAKE_MODE scenario as print mode, because real pi
+ * emits the same event stream in both. FAKE_RPC_WAIT=1 makes the turn sit and
+ * wait for a steer or an abort instead, which is what the mid-run message tests
+ * need; FAKE_RPC_SETTLE_MS answers after a delay.
  */
 async function runRpc() {
 	out({ type: "session", id: "fake-session", cwd: process.cwd() });
@@ -290,9 +317,24 @@ async function runRpc() {
 			out({ type: "response", command: cmd.type, success: true });
 
 			if (cmd.type === "prompt") {
-				out({ type: "turn_start" });
-				if (settleMs) setTimeout(() => settle("RPC ANSWER"), Number(settleMs));
-				else spawnMarkedChild();
+				if (settleMs) {
+					out({ type: "turn_start" });
+					setTimeout(() => settle("RPC ANSWER"), Number(settleMs));
+				} else if (process.env.FAKE_RPC_WAIT === "1") {
+					out({ type: "turn_start" });
+					spawnMarkedChild();
+				} else {
+					settled = true;
+					void runScenario().then(() => {
+						// Real pi ends a turn with agent_settled, and the server closes stdin on
+						// that event. Scenarios that deliberately break the message contract emit
+						// no such event, so the fake exits by itself rather than sit until the
+						// deadline — unless it is a scenario whose whole point is to hang. The
+						// delay lets stdout flush.
+						if (holding) return;
+						setTimeout(() => process.exit(exitCode), 20);
+					});
+				}
 			} else if (cmd.type === "steer") {
 				// A steered turn reports what it was told, so the test can prove the
 				// message reached a turn that was already running.

@@ -158,6 +158,23 @@ export function makeWorkspace(): Workspace {
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Wait for a condition instead of guessing how long it takes. Test files run in
+ * parallel, so a fixed sleep that is comfortable alone is a coin flip under load.
+ */
+export async function waitFor(
+	label: string,
+	predicate: () => boolean,
+	{ timeoutMs = 10_000, everyMs = 50 }: { timeoutMs?: number; everyMs?: number } = {},
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await sleep(everyMs);
+	}
+	throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`);
+}
+
 export function sessionIdOf(text: string): string {
 	const match = text.match(/\[session: ([0-9a-f-]{36})\]/);
 	if (!match?.[1]) throw new Error(`no session id in: ${text.slice(0, 120)}`);

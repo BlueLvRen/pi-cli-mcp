@@ -79,11 +79,15 @@ export const DEFAULT_MODEL = process.env.PI_MCP_MODEL ?? null;
 export const DEFAULT_THINKING = process.env.PI_MCP_THINKING ?? null;
 
 /**
- * Which way to drive pi when a call does not say: `print` (`pi -p --mode json`,
- * one process per turn) or `rpc` (`pi --mode rpc`, process stays up and accepts
- * commands on stdin, so a running turn can be sent a message).
+ * Which way to drive pi when a call does not say.
+ *
+ * `rpc` by default: it is a superset of what `print` can do. Same event stream,
+ * same answer, plus a running turn stays reachable — and an interrupted one is
+ * ended with pi's own `abort`, which keeps the tail of the stream that a signal
+ * would cost. `print` (`pi -p --mode json`, one process per turn) remains for
+ * anything that prefers a process that cannot be talked to.
  */
-export const DEFAULT_TRANSPORT = process.env.PI_MCP_TRANSPORT === "rpc" ? "rpc" : "print";
+export const DEFAULT_TRANSPORT = process.env.PI_MCP_TRANSPORT === "print" ? "print" : "rpc";
 
 /** argv has an OS size limit; longer prompts go through a temp file instead. */
 export const MAX_PROMPT = 2_000_000;

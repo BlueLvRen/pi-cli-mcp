@@ -283,6 +283,10 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 			if (gracefulTimer) clearTimeout(gracefulTimer);
 			liveTrees.delete(signalTree);
 			unsubscribe();
+			// pi exiting does not mean its group is empty: anything it left detached
+			// keeps running, and nothing else will reap it. A clean exit gets the same
+			// sweep as a killed one — on an already-empty group this is a no-op.
+			signalTree("SIGTERM");
 			// pi may end its last event at EOF instead of a newline; without this the
 			// final answer would be missed and the run would look contract-broken.
 			if (pending) {

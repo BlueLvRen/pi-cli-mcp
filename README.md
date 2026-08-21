@@ -137,22 +137,29 @@ Two ways to drive pi, behind one interface. Everything downstream — the event
 accumulator, answer selection, the stats line, failure reporting — is shared, so
 the choice changes only how pi is launched and what is possible during a run.
 
-| | `print` (default) | `rpc` |
+| | `rpc` (default) | `print` |
 |---|---|---|
-| command | `pi -p --mode json` | `pi --mode rpc` |
-| process | one per turn, exits when done | stays up, reads JSONL commands on stdin |
-| mid-run message | impossible: pi reads nothing while working | `pi_send` |
-| prompt delivery | argv, with a temp file for long or dash-leading prompts | inside the command, no argv limit |
+| command | `pi --mode rpc` | `pi -p --mode json` |
+| process | stays up, reads JSONL commands on stdin | one per turn, exits when done |
+| mid-run message | `pi_send` | impossible: pi reads nothing while working |
+| interrupted by deadline or cancel | pi's own `abort` first, signals only as fallback | SIGTERM, then SIGKILL |
+| prompt delivery | inside the command, no argv limit | argv, with a temp file for long or dash-leading prompts |
 
-Pick per call with `transport`, or set the default with `PI_MCP_TRANSPORT=rpc`.
+`rpc` is the default because it is a superset: the same event stream and the same answer, plus a
+running turn stays reachable and an interrupted one is ended in-protocol. Pick per call with
+`transport`, or set the default with `PI_MCP_TRANSPORT=print`.
 
 ### Reaching a running turn
 
 `pi --mode rpc` accepts commands while it works. That is the whole reason the
 transport exists, and it is exposed as pi's commands, unchanged:
 
+A call blocks until the turn settles, so reaching it needs a second caller — or a client that stops
+waiting. Claude Code, for one, moves a tool call to the background after about two minutes, and from
+that point the turn is reachable from the same conversation:
+
 ```js
-pi({ prompt: "long task…", cwd: "/repo", transport: "rpc" })   // still running
+pi({ prompt: "long task…", cwd: "/repo" })   // moved to the background by the client
 
 pi_running()
 // 1 running:
@@ -270,7 +277,7 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_ABORT_GRACE_MS` | `5000` | How long `abort` gets before signals (rpc only). |
 | `PI_MCP_STATE` | `~/.local/state/pi-mcp/sessions.json` | Session → cwd map. |
 | `PI_MCP_WRAP` | unset | Command prefix, e.g. `sandbox-exec -f profile.sb`. |
-| `PI_MCP_TRANSPORT` | `print` | Default transport: `print` or `rpc`. |
+| `PI_MCP_TRANSPORT` | `rpc` | Default transport: `rpc` or `print`. |
 
 ## Design
 

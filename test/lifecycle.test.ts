@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Client, makeWorkspace, sleep, type Workspace } from "./helpers/client.ts";
+import { Client, makeWorkspace, sleep, type Workspace, waitFor } from "./helpers/client.ts";
 
 let ws: Workspace;
 
@@ -53,8 +53,7 @@ describe("cancellation", () => {
 		const client = new Client({ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
 		await client.handshake();
 		const call = client.request("tools/call", { name: "pi", arguments: { prompt: "go", cwd: ws.dir } });
-		await sleep(700);
-		expect(survivors()).not.toBe("");
+		await waitFor("pi to spawn its child", () => survivors() !== "");
 
 		client.send({
 			jsonrpc: "2.0",
@@ -65,8 +64,7 @@ describe("cancellation", () => {
 		expect(res.isError).toBe(true);
 		expect(res.content[0].text).toContain("cancelled");
 
-		await sleep(600);
-		expect(survivors()).toBe("");
+		await waitFor("the process tree to be reaped", () => survivors() === "");
 		client.close();
 	});
 
@@ -112,13 +110,11 @@ describe("shutdown", () => {
 		const client = new Client({ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
 		await client.handshake();
 		client.request("tools/call", { name: "pi", arguments: { prompt: "go", cwd: ws.dir } });
-		await sleep(700);
-		expect(survivors()).not.toBe("");
+		await waitFor("pi to spawn its child", () => survivors() !== "");
 
 		// stdin EOF is how an MCP client says goodbye.
 		client.child.stdin.end();
-		await sleep(1500);
-		expect(survivors()).toBe("");
+		await waitFor("the process tree to be reaped", () => survivors() === "");
 		client.child.kill("SIGKILL");
 	});
 
@@ -126,13 +122,26 @@ describe("shutdown", () => {
 		const client = new Client({ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
 		await client.handshake();
 		client.request("tools/call", { name: "pi", arguments: { prompt: "go", cwd: ws.dir } });
-		await sleep(700);
-		expect(survivors()).not.toBe("");
+		await waitFor("pi to spawn its child", () => survivors() !== "");
 
 		client.child.kill("SIGTERM");
-		await sleep(1500);
-		expect(survivors()).toBe("");
+		await waitFor("the process tree to be reaped", () => survivors() === "");
 		client.child.kill("SIGKILL");
+	});
+});
+
+describe("cleanup after a normal finish", () => {
+	it("reaps what pi left behind even when pi exited cleanly", async () => {
+		// pi exiting is not the same as pi's process group being empty. A run that
+		// answers normally but leaves a detached child must not leak it: nothing
+		// else is going to reap it.
+		const client = new Client({ ...ws.env, FAKE_MODE: "child_then_answer", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
+		await client.handshake();
+		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir });
+		expect(res.isError).toBe(false);
+		expect(res.text).toContain("ANSWERED WITH CHILD LEFT");
+		await waitFor("the leftover child to be reaped", () => survivors() === "");
+		client.close();
 	});
 });
 
