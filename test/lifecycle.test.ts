@@ -15,13 +15,20 @@ beforeAll(() => {
 });
 afterAll(() => ws.cleanup());
 
+// Test files run in parallel, so each spawned grandchild carries a tag unique to
+// this file. Selecting on "sleep 120" alone would see other files' processes.
+const CHILD_TAG = "pi-cli-mcp-lifecycle-child";
+
 function survivors(): string {
-	return spawnSync("pgrep", ["-f", "sleep 120"], { encoding: "utf8" }).stdout.trim();
+	return spawnSync("pgrep", ["-f", CHILD_TAG], { encoding: "utf8" }).stdout.trim();
 }
 
 describe("timeout", () => {
 	it("kills pi and reports the timeout", async () => {
-		const client = new Client({ ...ws.env, FAKE_MODE: "hang", PI_MCP_TIMEOUT_MS: "1000" }, ws.dir);
+		const client = new Client(
+			{ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG, PI_MCP_TIMEOUT_MS: "1000" },
+			ws.dir,
+		);
 		await client.handshake();
 		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir });
 		client.close();
@@ -43,7 +50,7 @@ describe("exit status", () => {
 
 describe("cancellation", () => {
 	it("kills the whole process tree, not just pi", async () => {
-		const client = new Client({ ...ws.env, FAKE_MODE: "hang" }, ws.dir);
+		const client = new Client({ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
 		await client.handshake();
 		const call = client.request("tools/call", { name: "pi", arguments: { prompt: "go", cwd: ws.dir } });
 		await sleep(700);
@@ -102,7 +109,7 @@ describe("cancellation", () => {
 
 describe("shutdown", () => {
 	it("reaps running pi trees on stdin EOF", async () => {
-		const client = new Client({ ...ws.env, FAKE_MODE: "hang" }, ws.dir);
+		const client = new Client({ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
 		await client.handshake();
 		client.request("tools/call", { name: "pi", arguments: { prompt: "go", cwd: ws.dir } });
 		await sleep(700);
@@ -116,7 +123,7 @@ describe("shutdown", () => {
 	});
 
 	it("reaps running pi trees on SIGTERM", async () => {
-		const client = new Client({ ...ws.env, FAKE_MODE: "hang" }, ws.dir);
+		const client = new Client({ ...ws.env, FAKE_MODE: "hang", FAKE_CHILD_TAG: CHILD_TAG }, ws.dir);
 		await client.handshake();
 		client.request("tools/call", { name: "pi", arguments: { prompt: "go", cwd: ws.dir } });
 		await sleep(700);

@@ -72,6 +72,43 @@ function asRecordParam(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
+/**
+ * A crash in the adapter, not in pi — say so plainly and give a trace that is
+ * actually readable: the error class, the message, the frames from our own code,
+ * and the cause chain. A one-line `err.stack` dump buries the useful frames
+ * under node internals, and swallowing `cause` hides the real failure.
+ */
+function describeInternalError(err: unknown, tool: string): string {
+	const lines = [`pi-mcp internal error while handling \`${tool}\` — this is a bug in the adapter, not in pi.`];
+
+	let current: unknown = err;
+	let depth = 0;
+	while (current !== null && current !== undefined && depth < 5) {
+		const error = current instanceof Error ? current : undefined;
+		const label = depth === 0 ? "error" : "caused by";
+		if (error === undefined) {
+			lines.push(`\n${label}: ${typeof current === "string" ? current : JSON.stringify(current)}`);
+			break;
+		}
+
+		lines.push(`\n${label}: ${error.name}: ${error.message}`);
+		const frames = (error.stack ?? "")
+			.split("\n")
+			.slice(1)
+			.map((line) => line.trim())
+			// Our own frames first: node internals and dependency frames say nothing
+			// about a defect that lives in this file.
+			.filter((line) => line.includes("/pi-cli-mcp/") || line.includes("src/"))
+			.slice(0, 8);
+		if (frames.length > 0) lines.push(frames.map((f) => `  ${f}`).join("\n"));
+
+		current = error.cause;
+		depth += 1;
+	}
+
+	return lines.join("\n");
+}
+
 async function handle(msg: JsonRpcMessage): Promise<void> {
 	// A notification is a request without an `id` member. `id: null` is a
 	// (discouraged) real id, not the absence of one.
@@ -129,7 +166,7 @@ async function handle(msg: JsonRpcMessage): Promise<void> {
 				if (result === null) replyError(id, -32602, `Unknown tool: ${String(params.name)}`);
 				else reply(id, result);
 			} catch (err) {
-				reply(id, toolResult(`pi-mcp internal error: ${(err as Error).stack ?? String(err)}`, true));
+				reply(id, toolResult(describeInternalError(err, String(params.name)), true));
 			} finally {
 				inFlight.delete(key);
 			}

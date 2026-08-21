@@ -63,6 +63,7 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | `cwd` | Absolute path. pi reads `AGENTS.md` / `CLAUDE.md` from here. |
 | `model` | e.g. `bifrost/minimax/MiniMax-M3`, `sonnet`, `provider/id:thinking`. |
 | `thinking` | `off` … `max`. No-op on models without thinking support — check `pi_models`. |
+| `timeout_ms` | Wall clock for this run. Set it from the task; the server default is only a default. |
 | `tools` | Allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `no_tools` | Pure reasoning over the prompt text. |
 | `system_prompt_append` | Extra text appended to pi's system prompt. |
@@ -128,6 +129,49 @@ them. The state file is written with re-read-then-merge, so sessions learned by 
 erased by the other, but the underlying pi session file has no such protection. In practice one
 client owns a session; if you need a hard guarantee, keep one server process.
 
+## When a run dies
+
+A run killed by its deadline, by cancellation, or by a non-zero exit is not a
+dead end — pi keeps the conversation in its own session file, so the work is
+parked rather than lost. The failure carries what is needed to pick it back up:
+
+```
+[session: 0927adc5-…]
+
+[error: pi timed out after 1800000 ms and was killed]
+
+last thing pi said:
+43 tests pass, now showing the failure
+
+progress before it died:
+pi: bifrost/zai/glm-5.3 · 9 turns · 14 tool calls: bash×6, read×5, edit×3 · 61k in / 4.2k out · 1800.0s
+pi wrote: tests/test_upstream.py, conftest.py
+
+The session is intact and resumable — pi still has every turn above.
+To continue where it stopped:
+  pi_reply({ session: "0927adc5-…", prompt: "..." })
+Raise the limit for the next leg with timeout_ms if the task needs longer.
+```
+
+The session is recorded **before** the run starts, not after it succeeds, so a
+killed run is still listed by `pi_sessions` and still resumable. The files line
+comes from pi's own tool calls — this server does not inspect the filesystem.
+
+`timeout_ms` exists because the right deadline belongs to the task. A global
+limit kills long work at an arbitrary point; per-call it is a decision, and the
+report above makes the decision recoverable either way.
+
+### stderr
+
+stderr is diagnostics, and only the tail is forwarded (`PI_MCP_STDERR_LIMIT`).
+By the protocol, events belong on stdout, so a stderr line that *parses* as an
+event is a channel violation: those lines are counted by type and reported as
+`[6 protocol event line(s) on stderr, suppressed: message_start×3, message_end×3]`
+rather than pasted in. The classification comes from parsing the line once and
+reusing that parse for the tally — the payloads, prompts included, are never
+forwarded. `PI_MCP_STDERR_KEEP_EVENTS=1` turns the guard off and forwards stderr
+verbatim.
+
 ## Cancellation
 
 MCP `notifications/cancelled` kills pi with `SIGTERM`, escalating to `SIGKILL` after a grace period.
@@ -147,10 +191,12 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_BIN` | `pi` | Path to the pi binary. |
 | `PI_MCP_MODEL` | pi's setting | Default model for every call. |
 | `PI_MCP_THINKING` | pi's setting | Default thinking level. |
-| `PI_MCP_TIMEOUT_MS` | `1800000` | Per-call wall clock before pi is killed. |
+| `PI_MCP_TIMEOUT_MS` | `1800000` | Default wall clock; `timeout_ms` overrides it per call. |
+| `PI_MCP_MAX_TIMEOUT_MS` | `86400000` | Ceiling on what `timeout_ms` may ask for. |
 | `PI_MCP_MAX_CONCURRENT` | `4` | Concurrent pi processes. |
 | `PI_MCP_MAX_OUTPUT` | unset | Cap on the answer. Unset means no truncation. |
 | `PI_MCP_STDERR_LIMIT` | `1500` | stderr tail included in the response. |
+| `PI_MCP_STDERR_KEEP_EVENTS` | unset | `1` forwards stderr verbatim, event lines included. |
 | `PI_MCP_MAX_CAPTURE` | `16000000` | Read-buffer guard against a runaway stream. |
 | `PI_MCP_MAX_LINE` | `8000000` | Longest single event line from pi before it is dropped. |
 | `PI_MCP_MAX_FRAME` | `8000000` | Longest single JSON-RPC frame from the client. |

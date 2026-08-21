@@ -1,7 +1,7 @@
 // Turning pi's event stream into the one thing the caller wants — the answer —
 // plus aggregate stats. Nothing else from the transcript leaves this module.
 
-import { MAX_OUTPUT, STDERR_LIMIT, TIMEOUT_MS } from "./config.ts";
+import { KEEP_STDERR_EVENTS, MAX_OUTPUT, STDERR_LIMIT } from "./config.ts";
 import { asPiEvent, eventAs, readAssistantMessage } from "./parse.ts";
 import type { RunResult } from "./pi-process.ts";
 import { isStopBad, isStopOk, isStopStep, STOP_DEFERRED } from "./types.ts";
@@ -168,22 +168,83 @@ export function clip(text: string): string {
 /** pi announces a fresh session id on stderr; that is expected, not a warning. */
 const NOISE = [/^Warning: No project session found with id .*creating a new session/i];
 
-function usefulStderr(stderr: string): string {
-	return stderr
-		.split("\n")
-		.filter((line) => line.trim() && !NOISE.some((re) => re.test(line.trim())))
-		.join("\n")
-		.trim();
+interface ScannedStderr {
+	/** Lines that are actually diagnostics, in order. */
+	diagnostics: string[];
+	/** Event type -> count, taken from the same parse that classified the line. */
+	events: Map<string, number>;
 }
 
 /**
- * stderr is diagnostics, not the deliverable — keep only the tail, where the
- * actual error lives, and keep it small so it cannot dominate the response.
+ * Split stderr into diagnostics and misdirected protocol events.
+ *
+ * By the protocol, stdout carries the event stream and stderr carries
+ * diagnostics, so a stderr line that parses as an event is a channel violation.
+ * The decision is made by parsing — once — and the parse is what produces the
+ * event tally reported back, rather than being thrown away for a boolean.
+ *
+ * Dropping those lines is a guard on top of the strict path, not part of it:
+ * `PI_MCP_STDERR_KEEP_EVENTS=1` forwards stderr verbatim. It exists because one
+ * failing run can otherwise carry several retries' worth of serialized messages,
+ * prompts included, none of which a caller can act on.
+ */
+function scanStderr(stderr: string): ScannedStderr {
+	const diagnostics: string[] = [];
+	const events = new Map<string, number>();
+
+	for (const raw of stderr.split("\n")) {
+		const line = raw.trim();
+		if (!line) continue;
+		if (NOISE.some((re) => re.test(line))) continue;
+
+		if (!KEEP_STDERR_EVENTS) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(line);
+			} catch {
+				diagnostics.push(raw);
+				continue;
+			}
+			const type =
+				typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+					? (parsed as { type?: unknown }).type
+					: undefined;
+			if (typeof type === "string") {
+				events.set(type, (events.get(type) ?? 0) + 1);
+				continue;
+			}
+			diagnostics.push(raw);
+			continue;
+		}
+
+		diagnostics.push(raw);
+	}
+
+	return { diagnostics, events };
+}
+
+/**
+ * stderr is diagnostics, not the deliverable — keep the tail, where the actual
+ * error lives, drop transcript data, and stay small enough that it cannot
+ * dominate the response.
  */
 export function tailStderr(stderr: string): string {
-	const text = usefulStderr(stderr);
-	if (text.length <= STDERR_LIMIT) return text;
-	return `[…earlier stderr omitted]\n${text.slice(-STDERR_LIMIT)}`;
+	const { diagnostics, events } = scanStderr(stderr);
+
+	let note = "";
+	if (events.size > 0) {
+		const total = [...events.values()].reduce((sum, n) => sum + n, 0);
+		const breakdown = [...events]
+			.sort((a, b) => b[1] - a[1])
+			.map(([type, count]) => (count > 1 ? `${type}×${count}` : type))
+			.join(", ");
+		note = `[${total} protocol event line(s) on stderr, suppressed: ${breakdown}]`;
+	}
+
+	const text = diagnostics.join("\n").trim();
+	if (!text) return note;
+	const body = text.length <= STDERR_LIMIT ? text : `[…earlier stderr omitted]\n${text.slice(-STDERR_LIMIT)}`;
+	return note ? `${note}\n${body}` : body;
 }
 
 function compactTokens(n: number): string {
@@ -228,14 +289,52 @@ export function summarize(acc: Accumulator, elapsedMs: number): string {
 	return lines.join("\n");
 }
 
-export function describeFailure(result: RunResult, acc: Accumulator | null): string {
-	const head = result.cancelled
-		? "pi was cancelled and the process was killed."
+/**
+ * A run that died — timeout, cancellation, or a non-zero exit.
+ *
+ * The session is the important part: pi keeps the conversation in its own
+ * session file, so a killed run is resumable. Everything the caller needs to
+ * decide what to do next goes in here — the id to resume with, what pi managed
+ * to do before it died, and the last thing it said. A bare "timed out" leaves
+ * the caller unable to tell a finished-but-unreported task from an abandoned
+ * one, and forces it to rebuild the whole context from scratch.
+ */
+export function renderFailure(
+	acc: Accumulator,
+	result: RunResult,
+	elapsedMs: number,
+	session: { id: string; tool: "pi" | "pi_reply"; timeoutMs: number },
+): string {
+	const reason = result.cancelled
+		? "cancelled by the client; the process was killed"
 		: result.timedOut
-			? `pi timed out after ${TIMEOUT_MS} ms and was killed.`
-			: `pi exited with code ${result.code}.`;
-	const answer = acc ? selectAnswer(acc).text : null;
-	const partial = answer ? `\n\npartial answer:\n${clip(answer)}` : "";
+			? `timed out after ${session.timeoutMs} ms and was killed`
+			: `exited with code ${result.code}`;
+
+	const parts = [`[session: ${session.id}]`, `[error: pi ${reason}]`];
+
+	const answer = selectAnswer(acc);
+	if (answer.text) {
+		parts.push(`last thing pi said:\n${clip(answer.text)}`);
+	} else {
+		parts.push("pi produced no text before it died.");
+	}
+
+	// The accumulator already knows what happened, and none of it survives if we
+	// only report the failure. Files come from pi's own tool calls, not from
+	// inspecting the filesystem.
+	parts.push(`progress before it died:\n${summarize(acc, elapsedMs)}`);
+
+	// The whole point of keeping the id: the work is not lost, it is parked.
+	parts.push(
+		`The session is intact and resumable — pi still has every turn above.\n` +
+			`To continue where it stopped:\n` +
+			`  pi_reply({ session: "${session.id}", prompt: "..." })\n` +
+			`Raise the limit for the next leg with timeout_ms if the task needs longer.`,
+	);
+
 	const err = tailStderr(result.stderr);
-	return `${head}${partial}${err ? `\n\nstderr:\n${err}` : ""}`;
+	if (err) parts.push(`stderr:\n${err}`);
+
+	return parts.join("\n\n");
 }

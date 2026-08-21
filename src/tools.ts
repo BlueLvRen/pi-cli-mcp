@@ -9,13 +9,20 @@ import {
 	accumulate,
 	answerProblem,
 	clip,
-	describeFailure,
 	newAccumulator,
+	renderFailure,
 	selectAnswer,
 	summarize,
 	tailStderr,
 } from "./answer.ts";
-import { ARGV_PROMPT_LIMIT, DEFAULT_MODEL, DEFAULT_THINKING, MAX_PROMPT } from "./config.ts";
+import {
+	ARGV_PROMPT_LIMIT,
+	DEFAULT_MODEL,
+	DEFAULT_THINKING,
+	MAX_PROMPT,
+	MAX_TIMEOUT_MS,
+	TIMEOUT_MS,
+} from "./config.ts";
 import type { RunResult } from "./pi-process.ts";
 import { runPi, withSlot } from "./pi-process.ts";
 import { getSession, listSessions, rememberSession, withSessionLock } from "./sessions.ts";
@@ -35,6 +42,14 @@ const SHARED_PROPS = {
 		type: "string",
 		enum: THINKING_LEVELS,
 		description: "Thinking level. Defaults to your pi settings.",
+	},
+	timeout_ms: {
+		type: "integer",
+		minimum: 1000,
+		description:
+			"Wall clock for this run before pi is killed. Set it from the task, not from habit: a run " +
+			"killed at the deadline still returns its session id and what pi did, so a long task can be " +
+			"continued with pi_reply rather than restarted.",
 	},
 } as const;
 
@@ -148,6 +163,17 @@ function resolveCwd(requested: unknown): string {
 	return requested;
 }
 
+function readTimeout(value: unknown): number | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 1000) {
+		throw new Error("timeout_ms must be a number of milliseconds, at least 1000");
+	}
+	if (value > MAX_TIMEOUT_MS) {
+		throw new Error(`timeout_ms ${value} exceeds the server ceiling of ${MAX_TIMEOUT_MS} ms`);
+	}
+	return value;
+}
+
 function readOverrides(input: Record<string, unknown>): RunOverrides {
 	const overrides: RunOverrides = {};
 	const model = input.model ?? DEFAULT_MODEL;
@@ -222,11 +248,17 @@ interface Outcome {
 	elapsedMs: number;
 }
 
-async function invokePi(args: string[], cwd: string, ctx: CallContext): Promise<Outcome> {
+async function invokePi(
+	args: string[],
+	cwd: string,
+	ctx: CallContext,
+	timeoutMs: number | undefined,
+): Promise<Outcome> {
 	const acc = newAccumulator();
 	const started = Date.now();
 	const result = await runPi(args, cwd, {
 		token: ctx.token,
+		timeoutMs,
 		onEvent: (event) => {
 			const note = accumulate(acc, event);
 			if (note && ctx.progress) ctx.progress(note);
@@ -274,30 +306,44 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	let prompt: string;
 	let cwd: string;
 	let overrides: RunOverrides;
+	let timeoutMs: number | undefined;
 	try {
 		prompt = readPrompt(input.prompt, "pi");
 		cwd = resolveCwd(input.cwd);
 		overrides = readOverrides(input);
+		timeoutMs = readTimeout(input.timeout_ms);
 	} catch (err) {
 		return toolResult(`pi: ${(err as Error).message}`.replace("pi: pi:", "pi:"), true);
 	}
 
 	const sessionId = randomUUID();
+	// Recorded before the run, not after: a run that times out or is cancelled is
+	// still a real session on disk, and pi_reply needs to know its directory to
+	// resume it. Remembering only on success is how a killed task becomes
+	// unreachable.
+	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
+
 	const { args: tail, cleanup } = promptArgs(prompt);
 	const args = ["-p", "--mode", "json", "--session-id", sessionId, ...overrideArgs(overrides), ...tail];
 
 	let outcome: Outcome;
 	try {
-		outcome = await withSlot(() => invokePi(args, cwd, ctx));
+		outcome = await withSlot(() => invokePi(args, cwd, ctx, timeoutMs));
 	} finally {
 		cleanup();
 	}
 
 	if (outcome.result.code !== 0) {
-		return toolResult(describeFailure(outcome.result, outcome.acc), true);
+		return toolResult(
+			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
+				id: sessionId,
+				tool: "pi",
+				timeoutMs: timeoutMs ?? TIMEOUT_MS,
+			}),
+			true,
+		);
 	}
 
-	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
 	return renderSuccess(outcome, `[session: ${sessionId}]`);
 }
 
@@ -311,6 +357,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	let prompt: string;
 	let cwd: string;
 	let overrides: RunOverrides;
+	let timeoutMs: number | undefined;
 	try {
 		prompt = readPrompt(input.prompt, "pi_reply");
 		cwd = resolveCwd(input.cwd ?? known?.cwd);
@@ -319,6 +366,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 			model: input.model ?? known?.model,
 			thinking: input.thinking ?? known?.thinking,
 		});
+		timeoutMs = readTimeout(input.timeout_ms);
 	} catch (err) {
 		return toolResult(`pi_reply: ${(err as Error).message}`.replace("pi_reply: pi_reply:", "pi_reply:"), true);
 	}
@@ -328,13 +376,23 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 
 	let outcome: Outcome;
 	try {
-		outcome = await withSessionLock(session, () => withSlot(() => invokePi(args, cwd, ctx)));
+		outcome = await withSessionLock(session, () => withSlot(() => invokePi(args, cwd, ctx, timeoutMs)));
 	} finally {
 		cleanup();
 	}
 
 	if (outcome.result.code !== 0) {
-		return toolResult(describeFailure(outcome.result, outcome.acc), true);
+		// Keep the session current even on failure: the conversation on disk grew,
+		// and the next attempt should resume in the same place.
+		rememberSession(session, cwd, {});
+		return toolResult(
+			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
+				id: session,
+				tool: "pi_reply",
+				timeoutMs: timeoutMs ?? TIMEOUT_MS,
+			}),
+			true,
+		);
 	}
 
 	// pi creates a session when the id is unknown, so warn instead of silently

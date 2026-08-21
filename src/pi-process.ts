@@ -17,6 +17,8 @@ export interface RunOptions {
 	/** Called for each parsed JSON line of pi's `--mode json` stream. */
 	onEvent?: (event: unknown) => void;
 	token?: CancelToken | undefined;
+	/** Overrides the default wall clock for this run. */
+	timeoutMs?: number | undefined;
 }
 
 /**
@@ -106,6 +108,7 @@ function appendCapped(current: string, chunk: string): string {
  */
 export function runPi(args: string[], cwd: string, options: RunOptions = {}): Promise<RunResult> {
 	const { onEvent, token } = options;
+	const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
 
 	return new Promise<RunResult>((resolve) => {
 		// Cancelled while queued for a slot or a session lock: never start pi.
@@ -161,7 +164,7 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 		};
 
 		liveTrees.add(signalTree);
-		const timer = setTimeout(() => stop("timeout"), TIMEOUT_MS);
+		const timer = setTimeout(() => stop("timeout"), timeoutMs);
 		const unsubscribe = token?.subscribe(() => stop("cancelled")) ?? ((): void => {});
 
 		const consumeLine = (line: string): void => {

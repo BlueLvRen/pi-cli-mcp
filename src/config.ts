@@ -20,7 +20,15 @@ export const PI_BIN = process.env.PI_MCP_BIN ?? "pi";
  */
 export const PI_WRAP = (process.env.PI_MCP_WRAP ?? "").trim();
 
+/**
+ * Default wall clock for one run. A caller can raise or lower it per call with
+ * `timeout_ms`, because the right limit is a property of the task, not of the
+ * server: a task killed at an arbitrary global deadline loses its result even
+ * though the work was done.
+ */
 export const TIMEOUT_MS = numEnv("PI_MCP_TIMEOUT_MS", 1_800_000, 1_000);
+/** Hard ceiling on what a per-call `timeout_ms` may ask for. 24h by default. */
+export const MAX_TIMEOUT_MS = numEnv("PI_MCP_MAX_TIMEOUT_MS", 86_400_000, 1_000);
 export const KILL_GRACE_MS = numEnv("PI_MCP_KILL_GRACE_MS", 5_000, 0);
 
 /**
@@ -36,6 +44,14 @@ export const MAX_OUTPUT = process.env.PI_MCP_MAX_OUTPUT
 
 /** stderr is diagnostics, not the deliverable: keep only a small tail. */
 export const STDERR_LIMIT = numEnv("PI_MCP_STDERR_LIMIT", 1_500, 200);
+
+/**
+ * Forward stderr verbatim, including lines that parse as protocol events.
+ * The strict reading of the protocol is that events belong on stdout, so such a
+ * line is a channel violation; dropping it is a guard on top, and this switch
+ * turns the guard off.
+ */
+export const KEEP_STDERR_EVENTS = process.env.PI_MCP_STDERR_KEEP_EVENTS === "1";
 
 export const MAX_CAPTURE = numEnv("PI_MCP_MAX_CAPTURE", 16_000_000, 100_000);
 

@@ -87,8 +87,46 @@ async function runAgent() {
 	if (mode === "hang") {
 		out({ type: "turn_start" });
 		// A child of its own, to assert the whole tree dies with the parent.
-		spawn("sleep", ["120"], { stdio: "ignore" });
+		spawnMarkedChild();
 		setInterval(() => {}, 1000);
+		return;
+	}
+
+	if (mode === "hang_after_work") {
+		// Did real work and said something, then hangs before settling — the shape
+		// of a task killed at the deadline with its result unreported.
+		out({ type: "turn_start" });
+		out({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				provider: "fake",
+				model: "fake-1",
+				stopReason: "toolUse",
+				usage: { input: 10, output: 4, cost: { total: 0 } },
+				content: [
+					{ type: "text", text: "PARTIAL: 43 tests pass, now showing the failure" },
+					{ type: "toolCall", id: "c1", name: "write", arguments: { path: "note.md", content: "hi" } },
+				],
+			},
+		});
+		out({ type: "tool_execution_start", toolName: "write" });
+		out({ type: "tool_execution_end", toolName: "write", isError: false });
+		out({ type: "turn_start" });
+		spawnMarkedChild();
+		setInterval(() => {}, 1000);
+		return;
+	}
+
+	if (mode === "noisy_stderr") {
+		// A failing run that dumps its session payload to stderr, prompt included.
+		const message = (role, text) =>
+			JSON.stringify({ type: "message_start", message: { role, content: [{ type: "text", text }] } });
+		process.stderr.write(`${message("user", "SECRET_PROMPT_BODY")}\n`);
+		process.stderr.write(`${message("assistant", "SECRET_PROMPT_BODY echoed")}\n`);
+		process.stderr.write(`${JSON.stringify({ type: "message_end", message: { role: "user" } })}\n`);
+		process.stderr.write("Error: upstream refused the request\n");
+		process.exitCode = exitCode;
 		return;
 	}
 
@@ -204,6 +242,19 @@ async function runAgent() {
 	out({ type: "agent_end", willRetry: false });
 	out({ type: "agent_settled" });
 	process.exitCode = exitCode;
+}
+
+/**
+ * A long-lived grandchild, so a test can assert the whole process tree dies.
+ * Tagged with FAKE_CHILD_TAG: test files run in parallel, and a bare `sleep 120`
+ * would be found by every test's pgrep, not just the one that spawned it.
+ */
+function spawnMarkedChild() {
+	const tag = process.env.FAKE_CHILD_TAG ?? "pi-cli-mcp-child";
+	// Two commands, deliberately: with a single one `sh -c` execs it and replaces
+	// its own image, which drops the tag from the command line that pgrep -f
+	// matches on. The trailing `true` keeps the shell — and the tag — alive.
+	spawn("sh", ["-c", `sleep 120; true # ${tag}`], { stdio: "ignore" });
 }
 
 function finalMessage(text) {
