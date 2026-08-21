@@ -1,58 +1,59 @@
 {
-	"name": "pi-cli-mcp",
-	"version": "0.4.0",
-	"description": "MCP server that delegates coding tasks to your locally installed pi CLI. Wraps the real binary instead of bundling its own copy of the agent, so it inherits your providers, models and extensions. Sessions survive restarts, calls are cancellable, and each run reports tools used, tokens and cost.",
-	"type": "module",
-	"bin": {
-		"pi-cli-mcp": "dist/index.js"
-	},
-	"main": "dist/index.js",
-	"files": [
-		"dist",
-		"README.md",
-		"LICENSE"
-	],
-	"scripts": {
-		"build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
-		"clean": "rm -rf dist",
-		"check": "npm run check:format && npm run check:types && npm test",
-		"check:format": "biome check .",
-		"check:types": "tsc --noEmit -p tsconfig.json",
-		"fix": "biome check --write .",
-		"test": "vitest run --typecheck",
-		"test:watch": "vitest --typecheck",
-		"prepublishOnly": "npm run clean && npm run build && npm run check"
-	},
-	"engines": {
-		"node": ">=22"
-	},
-	"keywords": [
-		"mcp",
-		"model-context-protocol",
-		"pi",
-		"pi-coding-agent",
-		"coding-agent",
-		"subagent",
-		"claude-code",
-		"delegation"
-	],
-	"author": "Karataev Pavel <minmax777@gmail.com>",
-	"license": "MIT",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/minmax/pi-cli-mcp.git"
-	},
-	"bugs": {
-		"url": "https://github.com/minmax/pi-cli-mcp/issues"
-	},
-	"homepage": "https://github.com/minmax/pi-cli-mcp#readme",
-	"devDependencies": {
-		"@biomejs/biome": "^2.5.9",
-		"@earendil-works/pi-agent-core": "^0.84.2",
-		"@earendil-works/pi-ai": "^0.84.2",
-		"@earendil-works/pi-coding-agent": "^0.84.2",
-		"@types/node": "^26.2.0",
-		"typescript": "^7.0.2",
-		"vitest": "^4.1.11"
-	}
+  "name": "pi-cli-mcp",
+  "version": "0.4.0",
+  "description": "MCP server that delegates coding tasks to your locally installed pi CLI. Wraps the real binary instead of bundling its own copy of the agent, so it inherits your providers, models and extensions. Sessions survive restarts, calls are cancellable, and each run reports tools used, tokens and cost.",
+  "type": "module",
+  "bin": {
+    "pi-cli-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build",
+    "check": "npm run check:format && npm run check:types && npm test",
+    "check:format": "biome check .",
+    "check:types": "tsc --noEmit -p tsconfig.json",
+    "fix": "biome check --write .",
+    "test": "vitest run --typecheck",
+    "test:watch": "vitest --typecheck",
+    "prepublishOnly": "npm run clean && npm run build && npm run check"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pi",
+    "pi-coding-agent",
+    "coding-agent",
+    "subagent",
+    "claude-code",
+    "delegation"
+  ],
+  "author": "Karataev Pavel <minmax777@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minmax/pi-cli-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/minmax/pi-cli-mcp/issues"
+  },
+  "homepage": "https://github.com/minmax/pi-cli-mcp#readme",
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
+    "@earendil-works/pi-agent-core": "^0.84.2",
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
 }
