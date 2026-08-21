@@ -18,7 +18,7 @@ npx -y pi-cli-mcp            # no install
 npm install -g pi-cli-mcp    # or global
 ```
 
-Requires Node ≥ 20 and a working `pi` on `PATH` (`npm i -g @earendil-works/pi-coding-agent`).
+Requires Node ≥ 22 and a working `pi` on `PATH` (`npm i -g @earendil-works/pi-coding-agent`).
 
 ### Claude Code
 
@@ -178,15 +178,59 @@ and knows only a fixed provider list. Everything else in the ecosystem (`pi-mcp-
 `pi-mcp-extension` and forks) runs the opposite direction: MCP servers *into* pi. `pi` itself has
 no native `mcp-server` subcommand.
 
-## Tests
+## Development
+
+TypeScript, mirroring pi's own toolchain — one version newer where there is a newer one.
+
+| | pi 0.84 | here |
+|---|---|---|
+| compiler | `tsgo` dev-preview + typescript 5.9 | **typescript 7** (`tsc`, the native compiler, stable) |
+| lint / format | Biome 2.3.5, `recommended: true` | **Biome 2.5.9**, `preset` (the field that replaced it) |
+| tests | Vitest 4.1.9 | **Vitest 4.1.11**, with `--typecheck` on |
+| module | `Node16` | **`nodenext`** |
+| strictness | `strict`, `erasableSyntaxOnly` | plus `verbatimModuleSyntax`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noFallthroughCasesInSwitch`, `noUnusedLocals/Parameters` |
 
 ```bash
-npm test
+npm run build          # tsc -> dist/
+npm test               # unit + type tests, no API access, no tokens
+npm run check          # format + types + tests
+npm run fix            # biome --write
+PI_CLI_MCP_LIVE=1 npm test   # also exercise the real pi binary
 ```
 
-The suite drives the real server over stdio and uses a fake pi binary for the paths a live model
-cannot produce on demand (bad `stopReason`, oversized answers, cancellation), so it needs no API
-access and spends no tokens.
+### Types come from pi
+
+`src/types.ts` does not re-describe pi's wire shapes — it imports them:
+
+```ts
+import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
+import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+```
+
+`import type` is erased at compile time, so those packages stay devDependencies and the published
+output has **zero** dependencies (`test/packaging.test.ts` enforces both: every pi import is a type
+import, and nothing outside `node:` builtins is imported at runtime).
+
+The stop-reason classification is checked against pi in two directions:
+
+- `satisfies readonly PiStopReason[]` in `src/types.ts` rejects a reason pi does not have;
+- `test/pi-contract.test-d.ts` fails the typecheck if pi adds one we do not classify, if the four
+  buckets overlap, if an event we branch on is renamed, or if a `usage` field we read changes type.
+
+That test earned its keep immediately: it caught a branch on `auto_compaction_start`, an event name
+that does not exist in pi (it came from an unrelated older fork — the real one is `compaction_start`),
+and a `tool_execution_start.tool` fallback that pi never sends. Both were dead code silently doing
+nothing.
+
+`test/live.test.ts` is the runtime counterpart: the type test proves our view matches pi's declared
+types, the live test proves the installed pi actually behaves that way.
+
+### Fixture, not mocks
+
+`test/fixtures/fake-pi.mjs` is a stand-in pi binary that emits a real `--mode json` event stream. It
+covers what a live model cannot produce on demand: a bad or unknown `stopReason`, a settled-but-empty
+message, a 200k-char answer, a stream that is not JSON, a final event without a trailing newline, a
+hung process, and a lockfile-based overlap detector that fails if the session mutex is removed.
 
 ## License
 

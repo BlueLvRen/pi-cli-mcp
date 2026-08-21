@@ -1,0 +1,16 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": false,
+		"outDir": "./dist",
+		"rootDir": "./src",
+		// This package is an executable, not a library: no public API to type, and
+		// emitting declarations would put `import type "@earendil-works/pi-*"` into
+		// the published .d.ts, turning compile-time-only devDependencies into
+		// something consumers need.
+		"declaration": false,
+		"declarationMap": false
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["node_modules", "dist", "test"]
+}
