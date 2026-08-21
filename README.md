@@ -176,6 +176,19 @@ pi: bifrost/agnes/agnes-2.5-flash · 3 turns · 3 tool calls: bash×3 · 23k in 
 `command` selects which pi command to pass: `steer` (default, interrupts the
 current turn), `follow_up` (queues for after it), `abort` (stops it).
 
+### Ending a turn early
+
+A deadline or a cancellation ends an rpc turn with pi's own `abort` first, and
+only signals if that does not take within `PI_MCP_ABORT_GRACE_MS`. The reason is
+in pi's own shutdown path: on SIGTERM it deliberately skips `flushRawStdout()`,
+so signalling straight away can cost the tail of the event stream — including the
+answer pi was in the middle of writing. After `abort` the turn closes through the
+normal path and its report arrives. Print mode has no stdin to talk to, so there
+it is SIGTERM then SIGKILL as before.
+
+The report says which happened: `the turn was aborted` means it closed itself and
+the events are complete, `the process was killed` means it was cut off.
+
 **This server never sends anything on its own.** There is no automatic "please
 wrap up" before a deadline, no injected instructions: `pi_send` fires only when
 the caller calls it. What to send, and whether to send at all, is a decision the
@@ -254,6 +267,7 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_MAX_FRAME` | `8000000` | Longest single JSON-RPC frame from the client. |
 | `PI_MCP_MAX_SESSIONS` | `200` | Remembered sessions before the oldest is dropped. |
 | `PI_MCP_KILL_GRACE_MS` | `5000` | SIGTERM → SIGKILL grace period. |
+| `PI_MCP_ABORT_GRACE_MS` | `5000` | How long `abort` gets before signals (rpc only). |
 | `PI_MCP_STATE` | `~/.local/state/pi-mcp/sessions.json` | Session → cwd map. |
 | `PI_MCP_WRAP` | unset | Command prefix, e.g. `sandbox-exec -f profile.sb`. |
 | `PI_MCP_TRANSPORT` | `print` | Default transport: `print` or `rpc`. |

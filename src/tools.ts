@@ -331,7 +331,10 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	const plan: RunPlan = { cwd, sessionId, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
 	const outcome = await withSlot(() => invokePi(transport, plan, ctx));
 
-	if (outcome.result.code !== 0) {
+	// A turn ended by abort exits cleanly, so the exit code alone would report a
+	// timed-out or cancelled run as a normal answer. The flags are what say the
+	// run was ended from outside rather than finished.
+	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
 		return toolResult(
 			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
 				id: sessionId,
@@ -374,7 +377,10 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	const plan: RunPlan = { cwd, sessionId: session, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
 	const outcome = await withSessionLock(session, () => withSlot(() => invokePi(transport, plan, ctx)));
 
-	if (outcome.result.code !== 0) {
+	// A turn ended by abort exits cleanly, so the exit code alone would report a
+	// timed-out or cancelled run as a normal answer. The flags are what say the
+	// run was ended from outside rather than finished.
+	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
 		// Keep the session current even on failure: the conversation on disk grew,
 		// and the next attempt should resume in the same place.
 		rememberSession(session, cwd, {});

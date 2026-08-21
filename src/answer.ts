@@ -305,10 +305,13 @@ export function renderFailure(
 	elapsedMs: number,
 	session: { id: string; tool: "pi" | "pi_reply"; timeoutMs: number },
 ): string {
+	// How it ended matters to the reader: an aborted turn closed itself and its
+	// events arrived, a signalled one was cut off and may be missing its tail.
+	const ending = result.endedBy === "abort" ? "the turn was aborted" : "the process was killed";
 	const reason = result.cancelled
-		? "cancelled by the client; the process was killed"
+		? `cancelled by the client; ${ending}`
 		: result.timedOut
-			? `timed out after ${session.timeoutMs} ms and was killed`
+			? `timed out after ${session.timeoutMs} ms; ${ending}`
 			: `exited with code ${result.code}`;
 
 	const parts = [`[session: ${session.id}]`, `[error: pi ${reason}]`];

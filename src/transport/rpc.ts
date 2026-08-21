@@ -32,6 +32,14 @@ export const rpcTransport: Transport = {
 			token: ctx.token,
 			timeoutMs: plan.timeoutMs,
 			stdin: "pipe",
+			// A deadline or a cancellation ends the turn with pi's own `abort` first.
+			// Signalling straight away costs the tail of the stream: pi deliberately
+			// skips its stdout flush on SIGTERM, so the answer it was writing can be
+			// lost. After `abort` the turn closes through the normal path and the
+			// events arrive; SIGTERM/SIGKILL still follow if it does not.
+			gracefulStop: () => {
+				handle?.send({ type: "abort" });
+			},
 			onStart: (piHandle) => {
 				handle = piHandle;
 				unregister = registerRun({

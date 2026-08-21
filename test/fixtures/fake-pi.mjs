@@ -300,6 +300,10 @@ async function runRpc() {
 			} else if (cmd.type === "follow_up") {
 				settle(`FOLLOW_UP QUEUED: ${cmd.message}`);
 			} else if (cmd.type === "abort") {
+				// Mirrors pi closely enough for the tests that matter: an aborted turn
+				// still reports through the event stream. FAKE_RPC_IGNORE_ABORT makes it
+				// unresponsive instead, so the signal fallback can be exercised.
+				if (process.env.FAKE_RPC_IGNORE_ABORT === "1") continue;
 				settle("ABORTED");
 			}
 		}

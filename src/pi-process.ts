@@ -2,7 +2,16 @@
 // and never leaving a process behind.
 
 import { spawn } from "node:child_process";
-import { KILL_GRACE_MS, MAX_CAPTURE, MAX_CONCURRENT, MAX_LINE, PI_BIN, PI_WRAP, TIMEOUT_MS } from "./config.ts";
+import {
+	ABORT_GRACE_MS,
+	KILL_GRACE_MS,
+	MAX_CAPTURE,
+	MAX_CONCURRENT,
+	MAX_LINE,
+	PI_BIN,
+	PI_WRAP,
+	TIMEOUT_MS,
+} from "./config.ts";
 import type { CancelToken } from "./types.ts";
 
 export interface RunResult {
@@ -11,6 +20,12 @@ export interface RunResult {
 	stderr: string;
 	timedOut?: boolean;
 	cancelled?: boolean;
+	/**
+	 * How an interrupted run actually ended: `abort` means the transport closed
+	 * the turn in-protocol and pi exited on its own, `signal` means it had to be
+	 * killed. Only set when the run was interrupted.
+	 */
+	endedBy?: "abort" | "signal";
 }
 
 /** Writing side of a running pi process, for transports that talk back. */
@@ -33,6 +48,15 @@ export interface RunOptions {
 	 */
 	onStart?: (handle: PiHandle) => void;
 	stdin?: "ignore" | "pipe";
+	/**
+	 * Asked first when a run has to end early, before any signal is sent.
+	 *
+	 * It exists because pi skips `flushRawStdout()` on SIGTERM (see its
+	 * rpc-mode.ts), so signalling can cost the tail of the event stream — possibly
+	 * the answer pi was in the middle of writing. A transport that can end the
+	 * turn in-protocol gets ABORT_GRACE_MS to do so; signals follow either way.
+	 */
+	gracefulStop?: (reason: "timeout" | "cancelled") => void;
 }
 
 /**
@@ -155,6 +179,8 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 		let timedOut = false;
 		let cancelled = false;
 		let killTimer: NodeJS.Timeout | undefined;
+		let gracefulTimer: NodeJS.Timeout | undefined;
+		let endedBy: "abort" | "signal" | undefined;
 
 		// Signal the whole process group; fall back to the single child if the group
 		// is already gone (ESRCH) or the platform refuses the negative pid.
@@ -170,11 +196,29 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 			}
 		};
 
-		const stop = (reason: "timeout" | "cancelled"): void => {
-			if (reason === "timeout") timedOut = true;
-			if (reason === "cancelled") cancelled = true;
+		const hardStop = (): void => {
+			endedBy = "signal";
 			signalTree("SIGTERM");
 			killTimer ??= setTimeout(() => signalTree("SIGKILL"), KILL_GRACE_MS);
+		};
+
+		let stopping = false;
+		const stop = (reason: "timeout" | "cancelled"): void => {
+			if (stopping) return;
+			stopping = true;
+			if (reason === "timeout") timedOut = true;
+			if (reason === "cancelled") cancelled = true;
+
+			// Ask in-protocol first when the transport can: pi then closes the turn
+			// through its normal path and the events — including whatever it was
+			// writing — actually arrive. Signals are the fallback, not the opener.
+			if (options.gracefulStop) {
+				endedBy = "abort";
+				options.gracefulStop(reason);
+				gracefulTimer = setTimeout(hardStop, ABORT_GRACE_MS);
+				return;
+			}
+			hardStop();
 		};
 
 		liveTrees.add(signalTree);
@@ -236,6 +280,7 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 		const finish = (result: RunResult): void => {
 			clearTimeout(timer);
 			if (killTimer) clearTimeout(killTimer);
+			if (gracefulTimer) clearTimeout(gracefulTimer);
 			liveTrees.delete(signalTree);
 			unsubscribe();
 			// pi may end its last event at EOF instead of a newline; without this the
@@ -251,7 +296,7 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 			finish({ code: -1, stdout, stderr: `${stderr}\n${command}: ${err.message}`.trim() });
 		});
 		child.on("close", (code: number | null) => {
-			finish({ code: code ?? -1, stdout, stderr, timedOut, cancelled });
+			finish({ code: code ?? -1, stdout, stderr, timedOut, cancelled, ...(endedBy ? { endedBy } : {}) });
 		});
 	});
 }

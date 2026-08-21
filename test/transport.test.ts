@@ -139,6 +139,50 @@ describe("reaching a running turn", () => {
 		client.close();
 	});
 
+	it("ends a cancelled turn in-protocol, so its report still arrives", async () => {
+		// pi skips its stdout flush on SIGTERM, so signalling first can cost the tail
+		// of the stream. rpc sends `abort` instead and the turn reports normally.
+		const client = new Client({ ...ws.env }, ws.dir);
+		await client.handshake();
+		const call = client.request("tools/call", {
+			name: "pi",
+			arguments: { prompt: "long task", cwd: ws.dir, transport: "rpc" },
+		});
+		await sleep(600);
+		client.send({
+			jsonrpc: "2.0",
+			method: "notifications/cancelled",
+			params: { requestId: call.id, reason: "test" },
+		});
+		const res = (await call.promise).result;
+		client.close();
+
+		expect(res.isError).toBe(true);
+		expect(res.content[0].text).toContain("cancelled");
+		// The turn's own report survived the cancellation.
+		expect(res.content[0].text).toContain("ABORTED");
+		expect(res.content[0].text).toContain("pi_reply(");
+	});
+
+	it("still kills a turn that ignores the abort", async () => {
+		// PI_MCP_TIMEOUT_MS has a 1000 ms floor; anything lower is ignored and the
+		// 30-minute default applies.
+		const client = new Client(
+			{ ...ws.env, FAKE_RPC_IGNORE_ABORT: "1", PI_MCP_ABORT_GRACE_MS: "300", PI_MCP_TIMEOUT_MS: "1200" },
+			ws.dir,
+		);
+		await client.handshake();
+		const started = Date.now();
+		const res = await client.tool("pi", { prompt: "long task", cwd: ws.dir, transport: "rpc" });
+		const elapsed = Date.now() - started;
+		client.close();
+
+		expect(res.isError).toBe(true);
+		expect(res.text).toContain("timed out");
+		// Deadline, then the abort grace, then signals — not an unbounded wait.
+		expect(elapsed).toBeLessThan(6000);
+	});
+
 	it("validates its input", async () => {
 		const client = new Client(ws.env, ws.dir);
 		await client.handshake();

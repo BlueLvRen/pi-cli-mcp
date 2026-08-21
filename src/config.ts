@@ -32,6 +32,13 @@ export const MAX_TIMEOUT_MS = numEnv("PI_MCP_MAX_TIMEOUT_MS", 86_400_000, 1_000)
 export const KILL_GRACE_MS = numEnv("PI_MCP_KILL_GRACE_MS", 5_000, 0);
 
 /**
+ * How long a transport that can end a turn in-protocol gets to do so before
+ * signals are sent. Only the rpc transport can: it sends pi's own `abort`.
+ * Counted on top of the run's deadline, so a timeout can overrun by this much.
+ */
+export const ABORT_GRACE_MS = numEnv("PI_MCP_ABORT_GRACE_MS", 5_000, 0);
+
+/**
  * The answer is what the caller asked for, so it is NOT truncated by default: if
  * pi produced it, it goes to the caller in full. Set PI_MCP_MAX_OUTPUT to opt
  * into a cap. MAX_CAPTURE below is the only backstop, and it bounds the read
