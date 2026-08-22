@@ -196,10 +196,7 @@ it is SIGTERM then SIGKILL as before.
 The report says which happened: `the turn was aborted` means it closed itself and
 the events are complete, `the process was killed` means it was cut off.
 
-**This server never sends anything on its own.** There is no automatic "please
-wrap up" before a deadline, no injected instructions: `pi_send` fires only when
-the caller calls it. What to send, and whether to send at all, is a decision the
-adapter has no business making.
+Nothing is ever sent on this server's initiative: `pi_send` fires only when you call it.
 
 ## When a run dies
 
@@ -285,8 +282,8 @@ tree before exiting. Detached children have no other parent to clean them up.
   follow-ups survive a restart of this server.
 - **`pi -p --mode json`.** The json event stream is what yields turns, tool calls, token usage and
   cost — no scraping of human-readable output.
-- **No dependencies.** Newline-delimited JSON-RPC 2.0 is spoken directly, so there is no SDK to
-  keep in sync and nothing to audit but one file.
+- **No dependencies.** Newline-delimited JSON-RPC 2.0 is spoken directly; installing this package
+  pulls nothing else in.
 - **Long or dash-leading prompts** are passed as an `@file` attachment, since pi has no `--`
   separator and argv has an OS size limit.
 
@@ -319,48 +316,8 @@ npm run fix            # biome --write
 PI_CLI_MCP_LIVE=1 npm test   # also exercise the real pi binary
 ```
 
-Procedures live in [`.agents/skills/`](.agents/skills/): `release`, `validation`, `pi-contract`,
-`testing`. They carry the reasons behind the setup below, including what has already gone wrong.
-
-`npm run hooks` points `core.hooksPath` at `.githooks/`. pre-commit runs Biome and
-rejects a `package-lock.json` that has drifted from `package.json` — `npm ci` accepts such a lock,
-so nothing else catches it; this repo's lock had been stale since the TypeScript migration.
-pre-push runs the suite once, type tests included. It is not wired into `prepare`, because that
-also runs for anyone installing this package from git, and their hooks are not ours to set.
-
-### Types come from pi
-
-`src/types.ts` does not re-describe pi's wire shapes — it imports them:
-
-```ts
-import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
-import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
-```
-
-`import type` is erased at compile time, so those packages stay devDependencies and the published
-output has **zero** dependencies (`test/packaging.test.ts` enforces both: every pi import is a type
-import, and nothing outside `node:` builtins is imported at runtime).
-
-The stop-reason classification is checked against pi in two directions:
-
-- `satisfies readonly PiStopReason[]` in `src/types.ts` rejects a reason pi does not have;
-- `test/pi-contract.test-d.ts` fails the typecheck if pi adds one we do not classify, if the four
-  buckets overlap, if an event we branch on is renamed, or if a `usage` field we read changes type.
-
-That test earned its keep immediately: it caught a branch on `auto_compaction_start`, an event name
-that does not exist in pi (it came from an unrelated older fork — the real one is `compaction_start`),
-and a `tool_execution_start.tool` fallback that pi never sends. Both were dead code silently doing
-nothing.
-
-`test/live.test.ts` is the runtime counterpart: the type test proves our view matches pi's declared
-types, the live test proves the installed pi actually behaves that way.
-
-### Fixture, not mocks
-
-`test/fixtures/fake-pi.mjs` is a stand-in pi binary that emits a real `--mode json` event stream. It
-covers what a live model cannot produce on demand: a bad or unknown `stopReason`, a settled-but-empty
-message, a 200k-char answer, a stream that is not JSON, a final event without a trailing newline, a
-hung process, and a lockfile-based overlap detector that fails if the session mutex is removed.
+House rules are in [AGENTS.md](AGENTS.md); procedures — releasing, validation, pi's contract,
+testing — in [`.agents/skills/`](.agents/skills/).
 
 ## License
 
