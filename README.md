@@ -14,7 +14,7 @@ window, or parallel work.
 ## Install
 
 ```bash
-npx -y pi-cli-mcp            # no install
+npx -y pi-cli-mcp     # no install
 npm install -g pi-cli-mcp    # or global
 ```
 
@@ -51,7 +51,7 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | Tool | Purpose |
 |---|---|
 | `pi` | Start a pi session. Returns `[session: <uuid>]`, the answer, and stats. |
-| `pi_reply` | Continue a session by id. pi still holds the prior turns. |
+| `pi_reply` | Continue a session that is not executing — including one killed by a timeout. |
 | `pi_models` | List reachable models (provider, id, context, max output, thinking, images). |
 | `pi_send` | Send a message into a turn that is running right now (`rpc` transport only). |
 | `pi_running` | List turns executing right now and reachable by `pi_send`. |
