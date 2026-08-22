@@ -12,6 +12,9 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "multi_edit",
 interface SeenMessage {
 	text: string;
 	stopReason: string | undefined;
+	/** pi's own reason for a failed turn, per its error-termination contract. */
+	errorMessage: string | undefined;
+	diagnostics: string[];
 }
 
 export interface Accumulator {
@@ -94,7 +97,12 @@ export function accumulate(acc: Accumulator, raw: unknown): string | null {
 				}
 			}
 
-			acc.messages.push({ text: message.text, stopReason: message.stopReason });
+			acc.messages.push({
+				text: message.text,
+				stopReason: message.stopReason,
+				errorMessage: message.errorMessage,
+				diagnostics: message.diagnostics,
+			});
 			return null;
 		}
 
@@ -111,6 +119,9 @@ export interface SelectedAnswer {
 	text: string | null;
 	stopReason: string | undefined;
 	source: AnswerSource;
+	/** Present when pi said why the turn failed. */
+	errorMessage?: string | undefined;
+	diagnostics?: string[];
 }
 
 /**
@@ -126,15 +137,31 @@ export function selectAnswer(acc: Accumulator): SelectedAnswer {
 	for (let i = acc.messages.length - 1; i >= 0; i -= 1) {
 		const message = acc.messages[i];
 		if (message === undefined || isStopStep(message.stopReason)) continue;
-		if (message.text) return { text: message.text, stopReason: message.stopReason, source: "settled" };
+		const carried = { errorMessage: message.errorMessage, diagnostics: message.diagnostics };
+		if (message.text) {
+			return { text: message.text, stopReason: message.stopReason, source: "settled", ...carried };
+		}
 		// A settled but empty message: report it rather than reaching further back.
-		return { text: null, stopReason: message.stopReason, source: "none" };
+		return { text: null, stopReason: message.stopReason, source: "none", ...carried };
 	}
 	const lastWithText = [...acc.messages].reverse().find((m) => m.text);
 	if (lastWithText !== undefined) {
-		return { text: lastWithText.text, stopReason: lastWithText.stopReason, source: "cut-off" };
+		return {
+			text: lastWithText.text,
+			stopReason: lastWithText.stopReason,
+			source: "cut-off",
+			errorMessage: lastWithText.errorMessage,
+			diagnostics: lastWithText.diagnostics,
+		};
 	}
-	return { text: null, stopReason: acc.lastStopReason, source: "none" };
+	const last = acc.messages.at(-1);
+	return {
+		text: null,
+		stopReason: acc.lastStopReason,
+		source: "none",
+		errorMessage: last?.errorMessage,
+		diagnostics: last?.diagnostics ?? [],
+	};
 }
 
 /**
@@ -142,10 +169,13 @@ export function selectAnswer(acc: Accumulator): SelectedAnswer {
  * including a missing stopReason on the message being returned.
  */
 export function answerProblem(answer: SelectedAnswer): string | null {
+	// pi's own words first when it gave any: "stopReason=error" says a turn failed,
+	// `errorMessage` says why, and only the second one is actionable.
+	const because = answer.errorMessage ? `: ${answer.errorMessage}` : "";
 	if (answer.source === "none") {
 		return answer.stopReason !== undefined
-			? `pi settled with stopReason=${answer.stopReason} but produced no answer text`
-			: "pi produced no assistant text";
+			? `pi stopped with stopReason=${answer.stopReason} and produced no answer text${because}`
+			: `pi produced no assistant text${because}`;
 	}
 	if (answer.source === "cut-off") {
 		return "pi never settled a message — returning the last text it produced";
@@ -153,9 +183,9 @@ export function answerProblem(answer: SelectedAnswer): string | null {
 	const reason = answer.stopReason;
 	if (reason === undefined) return "pi settled without reporting a stopReason";
 	if (isStopOk(reason)) return null;
-	if (isStopBad(reason)) return `pi stopped with stopReason=${reason}`;
+	if (isStopBad(reason)) return `pi stopped with stopReason=${reason}${because}`;
 	if (reason === STOP_DEFERRED) return "pi deferred the turn instead of answering";
-	return `pi returned an unrecognized stopReason=${reason}`;
+	return `pi returned an unrecognized stopReason=${reason}${because}`;
 }
 
 // --- rendering ------------------------------------------------------------

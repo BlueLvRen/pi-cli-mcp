@@ -60,6 +60,15 @@ export interface ParsedAssistantMessage {
 	provider: string | undefined;
 	model: string | undefined;
 	stopReason: string | undefined;
+	/**
+	 * Why the turn failed. pi's contract is explicit: "Error termination must
+	 * produce an AssistantMessage with stopReason 'error' or 'aborted' and
+	 * errorMessage" (packages/ai/src/types.ts). Without reading it, a failed turn
+	 * reports only that no answer arrived — true, and useless.
+	 */
+	errorMessage: string | undefined;
+	/** Redacted provider/runtime diagnostics, when pi attached any. */
+	diagnostics: string[];
 	usage: ParsedUsage;
 	/** Text blocks of this message, joined; empty when it carried none. */
 	text: string;
@@ -97,10 +106,25 @@ export function readAssistantMessage(value: unknown): ParsedAssistantMessage | n
 		}
 	}
 
+	const diagnostics: string[] = [];
+	if (Array.isArray(message.diagnostics)) {
+		for (const raw of message.diagnostics) {
+			const entry = asRecord(raw);
+			if (entry === null) continue;
+			const type = asString(entry.type);
+			const error = asRecord(entry.error);
+			const detail = asString(error?.message) ?? asString(error?.type);
+			const line = [type, detail].filter(Boolean).join(": ");
+			if (line) diagnostics.push(line);
+		}
+	}
+
 	return {
 		provider: asString(message.provider),
 		model: asString(message.model),
 		stopReason: asString(message.stopReason),
+		errorMessage: asString(message.errorMessage),
+		diagnostics,
 		usage: readUsage(message.usage),
 		text: texts.join("\n\n"),
 		toolCalls,

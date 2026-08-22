@@ -298,13 +298,20 @@ function renderSuccess(outcome: Outcome, prefix: string | null): ToolResult {
 		// answer would break the one contract this server makes. Describe the shape
 		// of what arrived instead — enough to debug, with no transcript content.
 		const reasons = [...new Set(acc.messages.map((m) => m.stopReason ?? "none"))].join(", ");
-		parts.push(
-			"pi returned no usable answer text: its event stream did not match the " +
-				"expected `--mode json` contract.\n" +
-				`assistant messages seen: ${acc.messages.length}` +
+		const diagnostics = answer.diagnostics ?? [];
+		const lines = [
+			answer.errorMessage
+				? // pi reported a reason: lead with it. The shape of the stream is
+					// secondary once the cause is known.
+					`pi produced no answer text. pi's reason: ${answer.errorMessage}`
+				: "pi returned no usable answer text: its event stream did not match the " +
+					"expected `--mode json` contract.",
+			`assistant messages seen: ${acc.messages.length}` +
 				(acc.messages.length ? ` (stopReason: ${reasons})` : "") +
 				`, tool calls: ${acc.toolCalls.length}, raw stdout: ${result.stdout.length} chars`,
-		);
+		];
+		if (diagnostics.length) lines.push(`pi diagnostics: ${diagnostics.join("; ")}`);
+		parts.push(lines.join("\n"));
 	}
 
 	parts.push(`---\n${summarize(acc, elapsedMs)}`);

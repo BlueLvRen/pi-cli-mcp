@@ -208,6 +208,29 @@ async function runScenario() {
 		return;
 	}
 
+	if (mode === "error_turn") {
+		// pi's error-termination contract: stopReason "error" plus errorMessage, and
+		// no text at all. This is what a failed turn actually looks like.
+		out({ type: "turn_start" });
+		out({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				provider: "fake",
+				model: "fake-1",
+				stopReason: "error",
+				errorMessage: process.env.FAKE_ERROR_MESSAGE ?? "context window exceeded: 1048576 > 1000000 tokens",
+				diagnostics: [{ type: "provider_error", timestamp: 0, error: { message: "upstream 400" } }],
+				usage: { input: 12, output: 0, cost: { total: 0 } },
+				content: [],
+			},
+		});
+		out({ type: "agent_end", willRetry: false });
+		out({ type: "agent_settled" });
+		process.exitCode = exitCode;
+		return;
+	}
+
 	if (mode === "no_stop") {
 		out({ type: "turn_start" });
 		out({

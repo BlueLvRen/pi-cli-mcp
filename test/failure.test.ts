@@ -121,6 +121,46 @@ describe("stderr never carries transcript data", () => {
 	});
 });
 
+describe("a turn that pi itself failed", () => {
+	it("leads with pi's own reason instead of reporting an empty answer", async () => {
+		// pi's contract for a failed turn is stopReason "error" plus errorMessage and
+		// no text. Reporting only "no answer text" is true and useless — the reason
+		// is the one actionable thing in the response.
+		const client = new Client({ ...ws.env, FAKE_MODE: "error_turn" }, ws.dir);
+		await client.handshake();
+		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir });
+		client.close();
+
+		expect(res.isError).toBe(true);
+		expect(res.text).toContain("context window exceeded");
+		// And the classification still says what happened.
+		expect(res.text).toContain("stopReason=error");
+		// Diagnostics pi attached are surfaced, not the transcript.
+		expect(res.text).toContain("provider_error: upstream 400");
+	});
+
+	it("carries the reason for a session that cannot be read", async () => {
+		const client = new Client(
+			{
+				...ws.env,
+				FAKE_MODE: "error_turn",
+				FAKE_ERROR_MESSAGE: "failed to read session file: no space left on device",
+			},
+			ws.dir,
+		);
+		await client.handshake();
+		const res = await client.tool("pi_reply", {
+			session: "11111111-1111-4111-8111-111111111111",
+			prompt: "go",
+			cwd: ws.dir,
+		});
+		client.close();
+
+		expect(res.isError).toBe(true);
+		expect(res.text).toContain("no space left on device");
+	});
+});
+
 describe("per-call timeout", () => {
 	it("is accepted and overrides the server default", async () => {
 		// Server default is generous; the call asks for a short one and hits it.
