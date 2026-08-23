@@ -11,10 +11,14 @@ package **without provenance** — 0.4.0 went out that way and has `dist.attesta
 
 ## The sequence
 
+Move the `Unreleased` entries in [`CHANGELOG.md`](../../../CHANGELOG.md) under the new version with
+its date first — after the tag is pushed the publish has already happened and the entry is being
+written from memory.
+
 ```bash
 npm version <new-version> --no-git-tag-version   # updates package.json AND package-lock.json
 npm run check                                    # format, types, full suite
-git add package.json package-lock.json
+git add package.json package-lock.json CHANGELOG.md
 git commit
 git tag -a vX.Y.Z -m "<what changed in behaviour>"
 git push origin main

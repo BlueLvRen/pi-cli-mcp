@@ -316,8 +316,9 @@ npm run fix            # biome --write
 PI_CLI_MCP_LIVE=1 npm test   # also exercise the real pi binary
 ```
 
-House rules are in [AGENTS.md](AGENTS.md); procedures — releasing, validation, pi's contract,
-testing — in [`.agents/skills/`](.agents/skills/).
+What changed between versions is in [CHANGELOG.md](CHANGELOG.md). House rules are in
+[AGENTS.md](AGENTS.md); procedures — releasing, validation, pi's contract, testing — in
+[`.agents/skills/`](.agents/skills/).
 
 ## License
 
