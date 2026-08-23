@@ -299,17 +299,31 @@ function renderSuccess(outcome: Outcome, prefix: string | null): ToolResult {
 		// of what arrived instead — enough to debug, with no transcript content.
 		const reasons = [...new Set(acc.messages.map((m) => m.stopReason ?? "none"))].join(", ");
 		const diagnostics = answer.diagnostics ?? [];
-		const lines = [
-			answer.errorMessage
-				? // pi reported a reason: lead with it. The shape of the stream is
-					// secondary once the cause is known.
-					`pi produced no answer text. pi's reason: ${answer.errorMessage}`
-				: "pi returned no usable answer text: its event stream did not match the " +
-					"expected `--mode json` contract.",
+		const shape =
 			`assistant messages seen: ${acc.messages.length}` +
-				(acc.messages.length ? ` (stopReason: ${reasons})` : "") +
-				`, tool calls: ${acc.toolCalls.length}, raw stdout: ${result.stdout.length} chars`,
-		];
+			(acc.messages.length ? ` (stopReason: ${reasons})` : "") +
+			`, tool calls: ${acc.toolCalls.length}, raw stdout: ${result.stdout.length} chars`;
+
+		let headline: string;
+		if (answer.errorMessage) {
+			// pi reported a reason: lead with it, the stream shape is secondary.
+			headline = `pi produced no answer text. pi's reason: ${answer.errorMessage}`;
+		} else if (acc.messages.length > 0) {
+			// The stream was fine and pi settled the turn — the message itself was
+			// empty. Blaming the contract here sends the reader after the wrong bug;
+			// an empty completion is the model's, and retrying or switching model is
+			// what actually helps.
+			headline =
+				"pi settled the turn with an empty message: the model returned no content. " +
+				"The event stream was well-formed, so this is the model, not the protocol — " +
+				"retry, or use a different model.";
+		} else {
+			headline =
+				"pi returned no usable answer text: its event stream did not match the " +
+				"expected `--mode json` contract.";
+		}
+
+		const lines = [headline, shape];
 		if (diagnostics.length) lines.push(`pi diagnostics: ${diagnostics.join("; ")}`);
 		parts.push(lines.join("\n"));
 	}

@@ -208,6 +208,27 @@ async function runScenario() {
 		return;
 	}
 
+	if (mode === "empty_completion") {
+		// stopReason "stop" with an entirely empty content array: the stream is
+		// well-formed and pi settles the turn, the model just said nothing.
+		out({ type: "turn_start" });
+		out({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				provider: "fake",
+				model: "fake-1",
+				stopReason: "stop",
+				usage: { input: 4748, output: 0, cost: { total: 0 } },
+				content: [],
+			},
+		});
+		out({ type: "agent_end", willRetry: false });
+		out({ type: "agent_settled" });
+		process.exitCode = exitCode;
+		return;
+	}
+
 	if (mode === "error_turn") {
 		// pi's error-termination contract: stopReason "error" plus errorMessage, and
 		// no text at all. This is what a failed turn actually looks like.

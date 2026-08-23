@@ -46,6 +46,17 @@ describe("answer selection", () => {
 		expect(res.text).toMatch(/no answer text|no usable answer/);
 	});
 
+	it("blames the model, not the protocol, when a settled message is empty", async () => {
+		// A well-formed stream where the model returned nothing. Reporting a contract
+		// mismatch here sends the reader after the wrong bug.
+		const res = await run({ FAKE_MODE: "empty_completion" });
+		expect(res.isError).toBe(true);
+		expect(res.text).toContain("the model returned no content");
+		expect(res.text).not.toContain("did not match the expected");
+		// The stats still say what arrived, so the claim is checkable.
+		expect(res.text).toContain("assistant messages seen: 1");
+	});
+
 	it("never returns the raw transcript when the stream is not the expected contract", async () => {
 		const res = await run({ FAKE_MODE: "garbage" });
 		expect(res.isError).toBe(true);
