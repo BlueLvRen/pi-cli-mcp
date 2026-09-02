@@ -71,8 +71,8 @@ export const MAX_CAPTURE = numEnv("PI_MCP_MAX_CAPTURE", 16_000_000, 100_000);
 export const MAX_LINE = numEnv("PI_MCP_MAX_LINE", 8_000_000, 100_000);
 export const MAX_FRAME = numEnv("PI_MCP_MAX_FRAME", 8_000_000, 100_000);
 
-export const MAX_SESSIONS = numEnv("PI_MCP_MAX_SESSIONS", 200, 1);
-export const MAX_CONCURRENT = numEnv("PI_MCP_MAX_CONCURRENT", 4, 1);
+export const MAX_SESSIONS = numEnv("PI_MCP_MAX_SESSIONS", 1_000, 1);
+export const MAX_CONCURRENT = numEnv("PI_MCP_MAX_CONCURRENT", 100, 1);
 
 export const STATE_FILE = process.env.PI_MCP_STATE ?? join(homedir(), ".local", "state", "pi-mcp", "sessions.json");
 

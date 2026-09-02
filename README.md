@@ -262,14 +262,14 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_THINKING` | pi's setting | Default thinking level. |
 | `PI_MCP_TIMEOUT_MS` | `1800000` | Default wall clock; `timeout_ms` overrides it per call. |
 | `PI_MCP_MAX_TIMEOUT_MS` | `86400000` | Ceiling on what `timeout_ms` may ask for. |
-| `PI_MCP_MAX_CONCURRENT` | `4` | Concurrent pi processes. |
+| `PI_MCP_MAX_CONCURRENT` | `100` | Concurrent pi processes. |
 | `PI_MCP_MAX_OUTPUT` | unset | Cap on the answer. Unset means no truncation. |
 | `PI_MCP_STDERR_LIMIT` | `1500` | stderr tail included in the response. |
 | `PI_MCP_STDERR_KEEP_EVENTS` | unset | `1` forwards stderr verbatim, event lines included. |
 | `PI_MCP_MAX_CAPTURE` | `16000000` | Read-buffer guard against a runaway stream. |
 | `PI_MCP_MAX_LINE` | `8000000` | Longest single event line from pi before it is dropped. |
 | `PI_MCP_MAX_FRAME` | `8000000` | Longest single JSON-RPC frame from the client. |
-| `PI_MCP_MAX_SESSIONS` | `200` | Remembered sessions before the oldest is dropped. |
+| `PI_MCP_MAX_SESSIONS` | `1000` | Remembered sessions before the oldest is dropped. |
 | `PI_MCP_KILL_GRACE_MS` | `5000` | SIGTERM → SIGKILL grace period. |
 | `PI_MCP_ABORT_GRACE_MS` | `5000` | How long `abort` gets before signals (rpc only). |
 | `PI_MCP_STATE` | `~/.local/state/pi-mcp/sessions.json` | Session → cwd map. |
