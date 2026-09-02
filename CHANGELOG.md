@@ -5,6 +5,14 @@ What changed in behaviour, in the order it shipped. Dates are publish dates from
 Only three versions exist on npm — 0.4.0, 0.5.0 and 0.5.1. Anything below 0.4.0 was never
 published; the `0.3.0` that lingered in `package-lock.json` was a stale lock, not a release.
 
+## 0.7.0 — 2026-09-02
+
+- **No default run deadline.** The server-wide wall clock (`PI_MCP_TIMEOUT_MS`) defaulted to 30
+  minutes, killing long work at a point unrelated to the task. It now defaults to unset: pi runs
+  until it finishes unless the caller sets `timeout_ms` for that leg or an operator installs a
+  server-wide default. A changed default is a behaviour change, so this is a minor rather than a
+  patch.
+
 ## 0.6.0 — 2026-09-02
 
 - **Higher defaults for the two limits that gate how much work one server can hold.** Concurrent pi processes (`PI_MCP_MAX_CONCURRENT`) default to 100 instead of 4, and remembered sessions (`PI_MCP_MAX_SESSIONS`) to 1000 instead of 200. Changed defaults are behaviour changes, so this is a minor rather than a patch.

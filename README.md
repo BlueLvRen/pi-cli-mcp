@@ -32,7 +32,8 @@ claude mcp add-json pi -s user '{
 claude mcp list | grep '^pi:'      # expect: ✔ Connected
 ```
 
-The generous `timeout` matters: a real delegated task can run for minutes.
+The generous `timeout` matters: the server applies no run deadline by default, and a real
+delegated task can run for minutes.
 
 ### Any other MCP client
 
@@ -65,7 +66,7 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | `cwd` | Absolute path. pi reads `AGENTS.md` / `CLAUDE.md` from here. |
 | `model` | e.g. `bifrost/minimax/MiniMax-M3`, `sonnet`, `provider/id:thinking`. |
 | `thinking` | `off` … `max`. No-op on models without thinking support — check `pi_models`. |
-| `timeout_ms` | Wall clock for this run. Set it from the task; the server default is only a default. |
+| `timeout_ms` | Wall clock for this run. Off unless you set it — the task decides whether it needs a deadline. |
 | `tools` | Allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `no_tools` | Pure reasoning over the prompt text. |
 | `system_prompt_append` | Extra text appended to pi's system prompt. |
@@ -226,9 +227,12 @@ The session is recorded **before** the run starts, not after it succeeds, so a
 killed run is still listed by `pi_sessions` and still resumable. The files line
 comes from pi's own tool calls — this server does not inspect the filesystem.
 
-`timeout_ms` exists because the right deadline belongs to the task. A global
-limit kills long work at an arbitrary point; per-call it is a decision, and the
-report above makes the decision recoverable either way.
+`timeout_ms` exists because the right deadline belongs to the task. By default
+the server sets no deadline at all — pi runs until it finishes. Give the task a
+wall clock when it needs one, or install a server-wide default with
+`PI_MCP_TIMEOUT_MS`; a global limit would otherwise kill long work at an
+arbitrary point, while per-call it is a decision, and the report above makes
+the decision recoverable either way.
 
 ### stderr
 
@@ -260,7 +264,7 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_BIN` | `pi` | Path to the pi binary. |
 | `PI_MCP_MODEL` | pi's setting | Default model for every call. |
 | `PI_MCP_THINKING` | pi's setting | Default thinking level. |
-| `PI_MCP_TIMEOUT_MS` | `1800000` | Default wall clock; `timeout_ms` overrides it per call. |
+| `PI_MCP_TIMEOUT_MS` | unset | Server-wide default wall clock; unset means no deadline. `timeout_ms` overrides it per call. |
 | `PI_MCP_MAX_TIMEOUT_MS` | `86400000` | Ceiling on what `timeout_ms` may ask for. |
 | `PI_MCP_MAX_CONCURRENT` | `100` | Concurrent pi processes. |
 | `PI_MCP_MAX_OUTPUT` | unset | Cap on the answer. Unset means no truncation. |

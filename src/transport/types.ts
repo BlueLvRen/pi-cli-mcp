@@ -24,8 +24,11 @@ export interface RunPlan {
 	sessionId: string;
 	prompt: string;
 	overrides: RunOverrides;
-	/** Hard wall clock: pi is killed at this point. */
-	timeoutMs: number;
+	/**
+	 * Hard wall clock: pi is killed at this point. Undefined means no deadline
+	 * for this run.
+	 */
+	timeoutMs: number | undefined;
 }
 
 export interface Transport {

@@ -333,7 +333,7 @@ export function renderFailure(
 	acc: Accumulator,
 	result: RunResult,
 	elapsedMs: number,
-	session: { id: string; tool: "pi" | "pi_reply"; timeoutMs: number },
+	session: { id: string; tool: "pi" | "pi_reply"; timeoutMs: number | undefined },
 ): string {
 	// How it ended matters to the reader: an aborted turn closed itself and its
 	// events arrived, a signalled one was cut off and may be missing its tail.
@@ -341,7 +341,7 @@ export function renderFailure(
 	const reason = result.cancelled
 		? `cancelled by the client; ${ending}`
 		: result.timedOut
-			? `timed out after ${session.timeoutMs} ms; ${ending}`
+			? `timed out${session.timeoutMs === undefined ? "" : ` after ${session.timeoutMs} ms`}; ${ending}`
 			: `exited with code ${result.code}`;
 
 	const parts = [`[session: ${session.id}]`, `[error: pi ${reason}]`];

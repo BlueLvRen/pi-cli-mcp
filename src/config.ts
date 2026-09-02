@@ -13,6 +13,18 @@ function numEnv(name: string, fallback: number, min: number): number {
 	return value;
 }
 
+/** Like numEnv, but an absent variable means "no limit" rather than a number. */
+function numEnvOrUndefined(name: string, min: number): number | undefined {
+	const raw = process.env[name];
+	if (raw === undefined || raw === "") return undefined;
+	const value = Number(raw);
+	if (!Number.isFinite(value) || value < min) {
+		process.stderr.write(`pi-mcp: ignoring invalid ${name}=${raw}, using no limit\n`);
+		return undefined;
+	}
+	return value;
+}
+
 export const PI_BIN = process.env.PI_MCP_BIN ?? "pi";
 
 /**
@@ -22,12 +34,13 @@ export const PI_BIN = process.env.PI_MCP_BIN ?? "pi";
 export const PI_WRAP = (process.env.PI_MCP_WRAP ?? "").trim();
 
 /**
- * Default wall clock for one run. A caller can raise or lower it per call with
- * `timeout_ms`, because the right limit is a property of the task, not of the
- * server: a task killed at an arbitrary global deadline loses its result even
- * though the work was done.
+ * Server-wide wall clock for one run. Off by default: only the caller knows how
+ * long its own task may take, so the right deadline is a property of the task,
+ * not of the server — a task killed at an arbitrary global deadline loses its
+ * result even though the work was done. Set PI_MCP_TIMEOUT_MS to install a
+ * default; a caller can still raise or lower it per call with `timeout_ms`.
  */
-export const TIMEOUT_MS = numEnv("PI_MCP_TIMEOUT_MS", 1_800_000, 1_000);
+export const TIMEOUT_MS = numEnvOrUndefined("PI_MCP_TIMEOUT_MS", 1_000);
 /** Hard ceiling on what a per-call `timeout_ms` may ask for. 24h by default. */
 export const MAX_TIMEOUT_MS = numEnv("PI_MCP_MAX_TIMEOUT_MS", 86_400_000, 1_000);
 export const KILL_GRACE_MS = numEnv("PI_MCP_KILL_GRACE_MS", 5_000, 0);

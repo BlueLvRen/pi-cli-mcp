@@ -222,7 +222,9 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 		};
 
 		liveTrees.add(signalTree);
-		const timer = setTimeout(() => stop("timeout"), timeoutMs);
+		// No default deadline: the run lasts until pi finishes unless a caller
+		// bound one with timeout_ms or the server was configured with one.
+		const timer = timeoutMs === undefined ? undefined : setTimeout(() => stop("timeout"), timeoutMs);
 		const unsubscribe = token?.subscribe(() => stop("cancelled")) ?? ((): void => {});
 
 		if (options.onStart) {
