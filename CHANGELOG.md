@@ -5,8 +5,9 @@ What changed in behaviour, in the order it shipped. Dates are publish dates from
 Only three versions exist on npm — 0.4.0, 0.5.0 and 0.5.1. Anything below 0.4.0 was never
 published; the `0.3.0` that lingered in `package-lock.json` was a stale lock, not a release.
 
-## Unreleased
+## 0.6.0 — 2026-09-02
 
+- **Higher defaults for the two limits that gate how much work one server can hold.** Concurrent pi processes (`PI_MCP_MAX_CONCURRENT`) default to 100 instead of 4, and remembered sessions (`PI_MCP_MAX_SESSIONS`) to 1000 instead of 200. Changed defaults are behaviour changes, so this is a minor rather than a patch.
 - An empty completion is attributed to the model instead of the protocol. A turn can settle with
   `stopReason: "stop"` and an entirely empty content array — a well-formed stream where the model
   said nothing. The response used to claim the event stream did not match the expected contract,
