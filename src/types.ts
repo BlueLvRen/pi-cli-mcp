@@ -87,10 +87,27 @@ export interface ToolResult {
 	isError?: boolean;
 }
 
+/**
+ * The four MCP tool hints. Directories (OpenAI's among them) reject a tool that
+ * leaves any of them out or sends a non-boolean, and hosts warn with them before
+ * invoking — so they are required here, not left to each tool to remember.
+ */
+export interface ToolAnnotations {
+	/** The tool observes without modifying anything. */
+	readOnlyHint: boolean;
+	/** Where readOnly is false: the tool can destroy work, not merely add to it. */
+	destructiveHint: boolean;
+	/** Repeating the call with the same arguments leaves no additional effect. */
+	idempotentHint: boolean;
+	/** The tool reaches beyond what the caller can see or control. */
+	openWorldHint: boolean;
+}
+
 export interface ToolDefinition {
 	name: string;
 	description: string;
 	inputSchema: Record<string, unknown>;
+	annotations: ToolAnnotations;
 }
 
 /** Cooperative cancellation: one token per in-flight request. */

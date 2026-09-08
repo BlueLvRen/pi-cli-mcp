@@ -2,8 +2,15 @@
 
 What changed in behaviour, in the order it shipped. Dates are publish dates from the registry.
 
-Only three versions exist on npm — 0.4.0, 0.5.0 and 0.5.1. Anything below 0.4.0 was never
-published; the `0.3.0` that lingered in `package-lock.json` was a stale lock, not a release.
+Nothing below 0.4.0 was ever published; the `0.3.0` that lingered in `package-lock.json` was a
+stale lock, not a release.
+
+## 0.7.1 — 2026-09-08
+
+- Every tool declares MCP `annotations` — `readOnlyHint`, `destructiveHint`, `idempotentHint`,
+  `openWorldHint` as explicit booleans matching what the handler actually does. Hosts use them to
+  warn before invoking, and directories (OpenAI's among them) reject a tool that leaves any of the
+  four out.
 
 ## 0.7.0 — 2026-09-02
 

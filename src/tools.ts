@@ -55,6 +55,30 @@ const SHARED_PROPS = {
 	},
 } as const;
 
+// The three annotation shapes the six tools fall into. pi and pi_reply edit files and
+// run shell commands through pi and never repeat identically (each call is a new task or
+// turn); pi_send reaches the same way, and its abort discards a running turn. pi_models
+// reads pi's live model catalog, which reflects provider state this server does not
+// control. pi_running and pi_sessions read only this server's own records.
+const MUTATING = {
+	readOnlyHint: false,
+	destructiveHint: true,
+	idempotentHint: false,
+	openWorldHint: true,
+} as const;
+const LIVE_LISTING = {
+	readOnlyHint: true,
+	destructiveHint: false,
+	idempotentHint: true,
+	openWorldHint: true,
+} as const;
+const LOCAL_LISTING = {
+	readOnlyHint: true,
+	destructiveHint: false,
+	idempotentHint: true,
+	openWorldHint: false,
+} as const;
+
 export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi",
@@ -101,6 +125,7 @@ export const TOOLS: ToolDefinition[] = [
 			required: ["prompt"],
 			additionalProperties: false,
 		},
+		annotations: MUTATING,
 	},
 	{
 		name: "pi_reply",
@@ -127,6 +152,7 @@ export const TOOLS: ToolDefinition[] = [
 			required: ["session", "prompt"],
 			additionalProperties: false,
 		},
+		annotations: MUTATING,
 	},
 	{
 		name: "pi_models",
@@ -144,6 +170,7 @@ export const TOOLS: ToolDefinition[] = [
 			},
 			additionalProperties: false,
 		},
+		annotations: LIVE_LISTING,
 	},
 	{
 		name: "pi_send",
@@ -174,6 +201,7 @@ export const TOOLS: ToolDefinition[] = [
 			required: ["session"],
 			additionalProperties: false,
 		},
+		annotations: MUTATING,
 	},
 	{
 		name: "pi_running",
@@ -182,6 +210,7 @@ export const TOOLS: ToolDefinition[] = [
 			"working directory, elapsed time, and messages already sent in. Only rpc-transport runs " +
 			"appear; 'print' runs are unreachable mid-run. For past sessions use pi_sessions.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		annotations: LOCAL_LISTING,
 	},
 	{
 		name: "pi_sessions",
@@ -190,6 +219,7 @@ export const TOOLS: ToolDefinition[] = [
 			"directory — running or finished, including runs that timed out. Use it to recover an id for " +
 			"pi_reply. For turns still executing (pi_send targets), use pi_running.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		annotations: LOCAL_LISTING,
 	},
 ];
 
