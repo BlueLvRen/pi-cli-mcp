@@ -17,13 +17,24 @@ import {
 import { DEFAULT_MODEL, DEFAULT_THINKING, MAX_PROMPT, MAX_TIMEOUT_MS, TIMEOUT_MS } from "./config.ts";
 import { asPiEvent, readTextDelta } from "./parse.ts";
 import type { RunResult } from "./pi-process.ts";
-import { runPi, withSlot } from "./pi-process.ts";
+import { makeCancelToken, runPi, withSlot } from "./pi-process.ts";
 import { getSession, listSessions, rememberSession, withSessionLock } from "./sessions.ts";
-import type { RunPlan, Transport } from "./transport/index.ts";
-import { getRun, listRuns, resolveTransport, TRANSPORT_NAMES } from "./transport/index.ts";
+import type { BackgroundRun, RunPlan, Transport } from "./transport/index.ts";
+import {
+	completeBackgroundRun,
+	forgetBackgroundRun,
+	getBackgroundRun,
+	getRun,
+	listBackgroundRuns,
+	listRuns,
+	registerBackgroundRun,
+	resolveTransport,
+	TRANSPORT_NAMES,
+} from "./transport/index.ts";
 import { updateRun } from "./transport/registry.ts";
 import type {
 	CallContext,
+	CancelToken,
 	ProgressStatus,
 	ProgressUpdate,
 	RunOverrides,
@@ -72,7 +83,7 @@ const SHARED_PROPS = {
 	},
 } as const;
 
-// The three annotation shapes the six tools fall into. pi and pi_reply edit files and
+// The three annotation shapes the seven tools fall into. pi, pi_start and pi_reply edit files and
 // run shell commands through pi and never repeat identically (each call is a new task or
 // turn); pi_send reaches the same way, and its abort discards a running turn. pi_models
 // reads pi's live model catalog, which reflects provider state this server does not
@@ -145,13 +156,56 @@ export const TOOLS: ToolDefinition[] = [
 		annotations: MUTATING,
 	},
 	{
+		name: "pi_start",
+		description:
+			"Start a NEW pi task in the background and return immediately with its session id. Uses the rpc " +
+			"transport so pi_running can report progress and pi_send can steer or abort it. Retrieve the " +
+			"final result with pi_reply({ session }) once it settles, or continue/recover it with a prompt.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				prompt: {
+					type: "string",
+					description:
+						"The complete task. pi cannot see this conversation, so include everything it needs: " +
+						"file paths, goal, constraints, expected output format.",
+				},
+				cwd: {
+					type: "string",
+					description:
+						"Usually omit to use this server's cwd. If set, must be an absolute path (relative is " +
+						"rejected). pi works and edits here, and reads AGENTS.md / CLAUDE.md from here.",
+				},
+				...SHARED_PROPS,
+				tools: {
+					type: "string",
+					description:
+						"Usually omit to keep pi's default set (includes bash/edit/write). Set a comma-separated " +
+						"allowlist of pi tool names only to restrict, e.g. 'read,grep,ls' for a read-only run.",
+				},
+				no_tools: {
+					type: "boolean",
+					description: "Disable all pi tools: pure reasoning over the prompt, no file or shell access.",
+				},
+				system_prompt_append: {
+					type: "string",
+					description: "Extra text appended to pi's system prompt for this run.",
+				},
+			},
+			required: ["prompt"],
+			additionalProperties: false,
+		},
+		annotations: MUTATING,
+	},
+	{
 		name: "pi_reply",
 		description:
 			"Send a new turn to an existing pi session that is not executing right now — including one " +
 			"that timed out or was cancelled: the session survives, so resume it here instead of " +
 			"restarting with `pi`. pi still has its prior turns (but never this conversation), so the " +
-			"follow-up can be short. Survives restarts of this server. For a turn still running under " +
-			"'rpc', use pi_send instead.",
+			"follow-up can be short. For a background run from `pi_start`, omit `prompt` to wait for or " +
+			"retrieve its final result. Survives restarts of this server when a prompt is supplied. For a " +
+			"turn still running under 'rpc', use pi_send instead.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -166,7 +220,7 @@ export const TOOLS: ToolDefinition[] = [
 				},
 				...SHARED_PROPS,
 			},
-			required: ["session", "prompt"],
+			required: ["session"],
 			additionalProperties: false,
 		},
 		annotations: MUTATING,
@@ -223,9 +277,9 @@ export const TOOLS: ToolDefinition[] = [
 	{
 		name: "pi_running",
 		description:
-			"List pi turns executing at this moment — the ones pi_send can reach — with session id, " +
-			"working directory, elapsed time, and messages already sent in. Only rpc-transport runs " +
-			"appear; 'print' runs are unreachable mid-run. For past sessions use pi_sessions.",
+			"List pi turns executing or queued under the rpc transport — including non-blocking `pi_start` " +
+			"runs — with session id, working directory, elapsed time, latest safe progress, and whether " +
+			"pi_send can reach them. 'print' runs are unreachable mid-run. For past sessions use pi_sessions.",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 		annotations: LOCAL_LISTING,
 	},
@@ -418,6 +472,113 @@ function renderSuccess(outcome: Outcome, prefix: string | null): ToolResult {
 	return toolResult(parts.join("\n\n"), Boolean(problem));
 }
 
+function renderOutcome(outcome: Outcome, sessionId: string, timeoutMs: number | undefined): ToolResult {
+	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
+		return toolResult(
+			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
+				id: sessionId,
+				tool: "pi",
+				timeoutMs,
+			}),
+			true,
+		);
+	}
+	return renderSuccess(outcome, `[session: ${sessionId}]`);
+}
+
+async function waitForBackgroundResult(run: BackgroundRun, token: CancelToken): Promise<ToolResult> {
+	if (token.cancelled) return toolResult("pi_reply was cancelled.", true);
+	return new Promise<ToolResult>((resolve) => {
+		let finished = false;
+		let unsubscribe = (): void => {};
+		const finish = (result: ToolResult): void => {
+			if (finished) return;
+			finished = true;
+			unsubscribe();
+			resolve(result);
+		};
+		unsubscribe = token.subscribe(() => finish(toolResult("pi_reply was cancelled.", true)));
+		void run.complete.then(finish);
+	});
+}
+
+/**
+ * Start an rpc turn without tying its lifetime to the short `pi_start` request.
+ * The caller owns all follow-up decisions: this function only launches the run
+ * and records its result for a later `pi_reply({session})`.
+ */
+export async function callPiStart(input: Record<string, unknown>, ctx: CallContext): Promise<ToolResult> {
+	let prompt: string;
+	let cwd: string;
+	let overrides: RunOverrides;
+	let timeoutMs: number | undefined;
+	let transport: Transport;
+	let streamText: boolean;
+	try {
+		prompt = readPrompt(input.prompt, "pi_start");
+		cwd = resolveCwd(input.cwd);
+		overrides = readOverrides(input);
+		timeoutMs = readTimeout(input.timeout_ms);
+		streamText = readStream(input.stream, "pi_start");
+		// A background run must remain reachable. Do not inherit a server-wide
+		// print default that would make pi_send/pi_running impossible to use.
+		transport = resolveTransport(input.transport ?? "rpc");
+		if (!transport.acceptsMidRunMessages) throw new Error("pi_start requires transport 'rpc'");
+	} catch (err) {
+		return toolResult(`pi_start: ${(err as Error).message}`.replace("pi_start: pi_start:", "pi_start:"), true);
+	}
+
+	const sessionId = randomUUID();
+	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
+	const plan: RunPlan = { cwd, sessionId, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
+	const startedAt = Date.now();
+	registerBackgroundRun({
+		sessionId,
+		cwd,
+		startedAt,
+		handle: undefined,
+		status: "queued",
+		lastProgress: "queued",
+		lastEventAt: startedAt,
+	});
+	const backgroundToken = makeCancelToken();
+	const backgroundContext: CallContext = {
+		token: backgroundToken,
+		...(ctx.progress === undefined ? {} : { progress: ctx.progress }),
+	};
+	reportProgress(backgroundContext, sessionId, startedAt, "queued", "queued");
+
+	void withSessionLock(sessionId, () =>
+		withSlot(async () => {
+			reportProgress(backgroundContext, sessionId, startedAt, "running", "pi started");
+			return invokePi(transport, plan, backgroundContext, startedAt, streamText);
+		}),
+	)
+		.then((outcome) => {
+			const result = renderOutcome(outcome, sessionId, timeoutMs ?? TIMEOUT_MS);
+			reportProgress(
+				backgroundContext,
+				sessionId,
+				startedAt,
+				result.isError === true ? "failed" : "finished",
+				result.isError === true ? "run failed" : "finished",
+			);
+			completeBackgroundRun(sessionId, result);
+		})
+		.catch((err: unknown) => {
+			const message = err instanceof Error ? err.message : String(err);
+			const result = toolResult(`pi_start background run failed: ${message}`, true);
+			reportProgress(backgroundContext, sessionId, startedAt, "failed", "run failed");
+			completeBackgroundRun(sessionId, result);
+		});
+
+	return toolResult(
+		`[session: ${sessionId}]\n[run: ${sessionId}]\n` +
+			"Started in the background. Use pi_running to query progress, pi_send to intervene, " +
+			"and pi_reply({ session }) to retrieve the final result.",
+	);
+}
+
 // --- tools ----------------------------------------------------------------
 
 export async function callPi(input: Record<string, unknown>, ctx: CallContext): Promise<ToolResult> {
@@ -477,6 +638,17 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	if (typeof session !== "string" || session.trim() === "") {
 		return toolResult("pi_reply: `session` is required.", true);
 	}
+	const background = getBackgroundRun(session);
+	if (input.prompt === undefined) {
+		if (background === undefined) {
+			return toolResult(
+				"pi_reply: `prompt` is required unless the session was started with `pi_start`; " +
+					'use pi_reply({ session, prompt: "..." }) to continue or recover it.',
+				true,
+			);
+		}
+		return waitForBackgroundResult(background, ctx.token);
+	}
 
 	const known = getSession(session);
 	let prompt: string;
@@ -503,12 +675,15 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	const plan: RunPlan = { cwd, sessionId: session, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
 	const startedAt = Date.now();
 	reportProgress(ctx, session, startedAt, "queued", "queued");
-	const outcome = await withSessionLock(session, () =>
-		withSlot(async () => {
+	const outcome = await withSessionLock(session, () => {
+		// A prompt explicitly starts the next turn/recovery leg. Do not let a
+		// completed pi_start result shadow that new turn on a later no-prompt call.
+		forgetBackgroundRun(session);
+		return withSlot(async () => {
 			reportProgress(ctx, session, startedAt, "running", "pi started");
 			return invokePi(transport, plan, ctx, startedAt, streamText);
-		}),
-	);
+		});
+	});
 
 	// A turn ended by abort exits cleanly, so the exit code alone would report a
 	// timed-out or cancelled run as a normal answer. The flags are what say the
@@ -587,6 +762,14 @@ export function callPiSend(input: Record<string, unknown>): ToolResult {
 
 	const run = getRun(session);
 	if (run === undefined) {
+		const background = getBackgroundRun(session);
+		if (background !== undefined && background.result === undefined) {
+			return toolResult(
+				`pi_send: session ${session} is ${background.status} but is not connected to pi yet. ` +
+					"Query pi_running and retry once it reports can_send=true; this server does not queue messages automatically.",
+				true,
+			);
+		}
 		const alive = listRuns();
 		const hint =
 			alive.length === 0
@@ -616,11 +799,15 @@ export function callPiSend(input: Record<string, unknown>): ToolResult {
 }
 
 export function callPiRunning(): ToolResult {
-	const runs = listRuns();
+	const active = listRuns();
+	const seen = new Set(active.map((run) => run.sessionId));
+	const runs = [...active, ...listBackgroundRuns().filter((run) => !seen.has(run.sessionId))].sort(
+		(a, b) => a.startedAt - b.startedAt,
+	);
 	if (runs.length === 0) {
 		return toolResult(
-			"No pi turn is running under the rpc transport. Runs started with transport 'print' do not " +
-				"appear here — pi reads nothing while it works in that mode.",
+			"No pi turn is running under the rpc transport (none queued either). Runs started with transport " +
+				"'print' do not appear here — pi reads nothing while it works in that mode.",
 		);
 	}
 	const rows = runs.map((run) => {
@@ -628,9 +815,10 @@ export function callPiRunning(): ToolResult {
 		const sent = run.sent.length > 0 ? ` sent: ${run.sent.map((s) => s.type).join(",")}` : "";
 		const progress = run.lastProgress ? `  last: ${run.lastProgress}` : "";
 		const lastEvent = new Date(run.lastEventAt).toISOString();
+		const canSend = run.handle !== undefined;
 		return (
 			`${run.sessionId}  status=${run.status}  elapsed=${elapsed}s  cwd=${run.cwd}  ` +
-			`can_send=true can_abort=true  last_event_at=${lastEvent}${progress}${sent}`
+			`can_send=${canSend} can_abort=${canSend}  last_event_at=${lastEvent}${progress}${sent}`
 		);
 	});
 	return toolResult(`${rows.length} running:\n\n${rows.join("\n")}`);

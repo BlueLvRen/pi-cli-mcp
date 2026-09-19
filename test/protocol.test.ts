@@ -40,6 +40,7 @@ describe("handshake", () => {
 			"pi_running",
 			"pi_send",
 			"pi_sessions",
+			"pi_start",
 		]);
 		client.close();
 	});

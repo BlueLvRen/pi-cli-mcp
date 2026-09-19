@@ -20,6 +20,7 @@ window, or parallel work.
 当前 fork 的主要改动：
 
 - 增加 MCP 标准 `notifications/progress` 进度通知，报告排队、运行、工具调用、收尾、完成和失败等阶段。
+- 增加 `pi_start` 非阻塞启动入口，支持“启动 → 查询 → 干预 → 取回结果”的调用流程。
 - 支持通过 `stream: true` 选择性接收模型文本增量；默认仍保持原有阻塞式最终结果兼容性。
 - 丰富 `pi_running` 输出，提供运行状态、已耗时、最后进度事件以及 `pi_send`/终止能力信息。
 - 增强 Windows 支持，包括 `.cmd`/`.bat` 形式的 pi 命令、进程树清理和跨平台构建脚本。
@@ -68,6 +69,7 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | Tool | Purpose |
 |---|---|
 | `pi` | Start a pi session. Returns `[session: <uuid>]`, the answer, and stats. |
+| `pi_start` | Start a pi session in the background and return its session id immediately. |
 | `pi_reply` | Continue a session that is not executing — including one killed by a timeout. |
 | `pi_models` | List reachable models (provider, id, context, max output, thinking, images). |
 | `pi_send` | Send a message into a turn that is running right now (`rpc` transport only). |
@@ -107,6 +109,30 @@ are never forwarded.
 > **pi has no permission system.** With its default tools it edits files and runs shell commands as
 > your user inside `cwd`. Pass `tools` or `no_tools` whenever the task is analysis. Use
 > `PI_MCP_WRAP` if you want a sandbox.
+
+### `pi_start`
+
+`pi_start` is the non-blocking counterpart to `pi`. It always uses the `rpc` transport and returns
+the session id immediately:
+
+```js
+pi_start({ prompt: "Run the test suite and fix failures.", cwd: "/repo" })
+// [session: 5aef3387-…]
+// [run: 5aef3387-…]
+// Started in the background. Use pi_running to query progress, pi_send to intervene,
+// and pi_reply({ session }) to retrieve the final result.
+```
+
+The caller controls the lifecycle. `pi_running` reports status, elapsed time, the latest safe
+progress message, and whether `pi_send` is currently available. `pi_send` can steer, queue a
+follow-up, or abort; no message is sent automatically. After the run settles, call
+`pi_reply({ session })` without a prompt to wait for or retrieve its final result. To continue or
+recover the session with a new turn, provide a prompt as usual:
+
+```js
+pi_reply({ session: "5aef3387-…" })
+pi_reply({ session: "5aef3387-…", prompt: "Continue from the last checkpoint." })
+```
 
 ## What comes back
 

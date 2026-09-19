@@ -2,7 +2,7 @@
 // reaching a turn that is already running.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Client, makeWorkspace, sessionIdOf, sleep, type Workspace } from "./helpers/client.ts";
+import { Client, makeWorkspace, sessionIdOf, sleep, type Workspace, waitFor } from "./helpers/client.ts";
 
 let ws: Workspace;
 
@@ -76,6 +76,54 @@ describe("transport selection", () => {
 });
 
 describe("reaching a running turn", () => {
+	it("starts a background turn, reports it, accepts steering, and returns its result", async () => {
+		const client = new Client({ ...ws.env, FAKE_RPC_WAIT: "1" }, ws.dir);
+		await client.handshake();
+
+		const started = await client.tool("pi_start", { prompt: "long task", cwd: ws.dir });
+		expect(started.isError).toBe(false);
+		const id = sessionIdOf(started.text);
+		expect(started.text).toContain("Started in the background");
+
+		let running = { text: "", isError: false };
+		await waitFor("background pi_start to appear in pi_running", async () => {
+			running = await client.tool("pi_running");
+			return running.text.includes(id);
+		});
+		expect(running.text).toContain(`status=running`);
+		expect(running.text).toContain("last:");
+
+		const sent = await client.tool("pi_send", { session: id, message: "wrap up now" });
+		expect(sent.isError).toBe(false);
+
+		const result = await client.tool("pi_reply", { session: id });
+		client.close();
+		expect(result.isError).toBe(false);
+		expect(result.text).toContain("STEERED: wrap up now");
+	});
+
+	it("waits for a background turn and returns its final result without starting another turn", async () => {
+		const client = new Client({ ...ws.env, FAKE_RPC_SETTLE_MS: "200" }, ws.dir);
+		await client.handshake();
+
+		const started = await client.tool("pi_start", { prompt: "go", cwd: ws.dir });
+		const result = await client.tool("pi_reply", { session: sessionIdOf(started.text) });
+		client.close();
+
+		expect(result.isError).toBe(false);
+		expect(result.text).toContain("RPC ANSWER");
+	});
+
+	it("requires rpc transport for a non-blocking start", async () => {
+		const client = new Client(ws.env, ws.dir);
+		await client.handshake();
+		const result = await client.tool("pi_start", { prompt: "go", cwd: ws.dir, transport: "print" });
+		client.close();
+
+		expect(result.isError).toBe(true);
+		expect(result.text).toContain("requires transport 'rpc'");
+	});
+
 	it("delivers a steer into a turn that is already working", async () => {
 		// No auto-settle: the turn waits, exactly like a long task would.
 		const client = new Client({ ...ws.env, FAKE_RPC_WAIT: "1" }, ws.dir);

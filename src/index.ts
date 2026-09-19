@@ -16,6 +16,7 @@ import {
 	callPiRunning,
 	callPiSend,
 	callPiSessions,
+	callPiStart,
 	TOOLS,
 	toolResult,
 } from "./tools.ts";
@@ -78,6 +79,7 @@ async function dispatchTool(
 	ctx: CallContext,
 ): Promise<ToolResult | null> {
 	if (name === "pi") return callPi(args, ctx);
+	if (name === "pi_start") return callPiStart(args, ctx);
 	if (name === "pi_reply") return callPiReply(args, ctx);
 	if (name === "pi_models") return callPiModels(args, ctx);
 	if (name === "pi_send") return callPiSend(args);

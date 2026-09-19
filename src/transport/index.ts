@@ -26,5 +26,14 @@ export function resolveTransport(requested: unknown): Transport {
 	return TRANSPORTS[requested];
 }
 
-export { getRun, listRuns } from "./registry.ts";
+export type { BackgroundRun } from "./registry.ts";
+export {
+	completeBackgroundRun,
+	forgetBackgroundRun,
+	getBackgroundRun,
+	getRun,
+	listBackgroundRuns,
+	listRuns,
+	registerBackgroundRun,
+} from "./registry.ts";
 export type { RunPlan, Transport, TransportName } from "./types.ts";

@@ -181,12 +181,12 @@ export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
  */
 export async function waitFor(
 	label: string,
-	predicate: () => boolean,
+	predicate: () => boolean | Promise<boolean>,
 	{ timeoutMs = 10_000, everyMs = 50 }: { timeoutMs?: number; everyMs?: number } = {},
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (predicate()) return;
+		if (await predicate()) return;
 		await sleep(everyMs);
 	}
 	throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`);
