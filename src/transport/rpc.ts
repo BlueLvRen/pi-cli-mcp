@@ -52,7 +52,11 @@ export const rpcTransport: Transport = {
 					lastProgress: "pi started",
 					lastEventAt: Date.now(),
 				});
-				piHandle.send({ type: "prompt", message: plan.prompt });
+				piHandle.send({
+					type: "prompt",
+					message: plan.prompt,
+					...(plan.images?.length ? { images: plan.images } : {}),
+				});
 			},
 			onEvent: (event) => {
 				onEvent(event);

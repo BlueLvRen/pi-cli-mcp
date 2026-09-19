@@ -16,6 +16,8 @@
 //   FAKE_STOP=<reason>     stopReason on the final message (default "stop")
 //   FAKE_EXIT=<code>       exit code (default 0)
 //   FAKE_STARTED_FILE      appended to with one line per invocation
+//   FAKE_IMAGE_ECHO=1      report the image count/mime received by rpc
+//   FAKE_IMAGE_UNSUPPORTED=1  settle with a vision-capability error
 //
 // Note: never call process.exit() after writing — stdout to a pipe is async and
 // exiting truncates the stream. Set process.exitCode instead.
@@ -50,7 +52,7 @@ if (process.argv.includes("rpc")) {
 	const rows = [
 		"provider  model                 context  max-out  thinking  images",
 		"fake      fake/alpha            1.0M     32.8K    yes       no",
-		"fake      fake/beta             200K     32.8K    no        no",
+		"fake      fake/beta             200K     32.8K    no        yes",
 	];
 	const kept =
 		filter && !filter.startsWith("-") ? [rows[0], ...rows.slice(1).filter((r) => r.includes(filter))] : rows;
@@ -340,6 +342,26 @@ async function runRpc() {
 		out({ type: "agent_settled" });
 	};
 
+	const settleImageError = () => {
+		if (settled) return;
+		settled = true;
+		out({ type: "turn_start" });
+		out({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				provider: "fake",
+				model: "fake/alpha",
+				stopReason: "error",
+				errorMessage: "Current model does not support images.",
+				usage: { input: 20, output: 0, cost: { total: 0 } },
+				content: [],
+			},
+		});
+		out({ type: "agent_end", willRetry: false });
+		out({ type: "agent_settled" });
+	};
+
 	let buffer = "";
 	process.stdin.setEncoding("utf8");
 	process.stdin.on("data", (chunk) => {
@@ -361,7 +383,15 @@ async function runRpc() {
 			out({ type: "response", command: cmd.type, success: true });
 
 			if (cmd.type === "prompt") {
-				if (settleMs) {
+				if (process.env.FAKE_IMAGE_UNSUPPORTED === "1" && Array.isArray(cmd.images) && cmd.images.length > 0) {
+					settleImageError();
+				} else if (process.env.FAKE_IMAGE_ECHO === "1" && Array.isArray(cmd.images) && cmd.images.length > 0) {
+					const mimeTypes = cmd.images.map((image) => image.mimeType).join(",");
+					const rawBase64 = cmd.images.every(
+						(image) => typeof image.data === "string" && !image.data.startsWith("data:"),
+					);
+					settle(`IMAGES=${cmd.images.length} MIME=${mimeTypes} RAW=${rawBase64}`);
+				} else if (settleMs) {
 					out({ type: "turn_start" });
 					setTimeout(() => settle("RPC ANSWER"), Number(settleMs));
 				} else if (process.env.FAKE_RPC_WAIT === "1") {

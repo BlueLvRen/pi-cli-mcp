@@ -14,7 +14,7 @@
 // accumulator, answer selection, the stats line, failure reporting) is shared.
 
 import type { RunResult } from "../pi-process.ts";
-import type { CallContext, RunOverrides } from "../types.ts";
+import type { CallContext, PiImageContent, RunOverrides } from "../types.ts";
 
 export type TransportName = "print" | "rpc";
 
@@ -23,6 +23,7 @@ export interface RunPlan {
 	/** pi's `--session-id`: the conversation this turn belongs to. */
 	sessionId: string;
 	prompt: string;
+	images?: PiImageContent[];
 	overrides: RunOverrides;
 	/**
 	 * Hard wall clock: pi is killed at this point. Undefined means no deadline

@@ -11,7 +11,7 @@
 // before it is used as one of them.
 
 import type { ThinkingLevel as PiThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, StopReason, TextContent, ToolCall, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, StopReason, TextContent, ToolCall, Usage } from "@earendil-works/pi-ai";
 import type { JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 /** The event stream of `pi -p --mode json`. */
@@ -22,6 +22,7 @@ export type PiEventOf<T extends PiEvent["type"]> = Extract<PiEvent, { type: T }>
 /** The only message role this server reads. */
 export type PiAssistantMessage = AssistantMessage;
 export type PiContentBlock = AssistantMessage["content"][number];
+export type PiImageContent = ImageContent;
 export type PiTextBlock = TextContent;
 export type PiToolCallBlock = ToolCall;
 export type PiUsage = Usage;
@@ -85,6 +86,26 @@ export interface ToolTextContent {
 export interface ToolResult {
 	content: ToolTextContent[];
 	isError?: boolean;
+	structuredContent?: {
+		error?: ToolErrorDetails;
+	};
+}
+
+export type ToolErrorCode =
+	| "invalid_image_data"
+	| "unsupported_mime_type"
+	| "image_too_large"
+	| "image_request_too_large"
+	| "image_transport_error"
+	| "image_input_not_allowed"
+	| "unsupported_model"
+	| "image_provider_error";
+
+export interface ToolErrorDetails {
+	code: ToolErrorCode;
+	message: string;
+	retryable: boolean;
+	imageIndex?: number;
 }
 
 export type ProgressStatus = "queued" | "running" | "tool" | "settling" | "stopping" | "finished" | "failed";

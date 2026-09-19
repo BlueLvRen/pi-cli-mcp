@@ -15,6 +15,7 @@ import {
 	tailStderr,
 } from "./answer.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, MAX_PROMPT, MAX_TIMEOUT_MS, TIMEOUT_MS } from "./config.ts";
+import { ImageInputError, ImageTransportError, readImages } from "./images.ts";
 import { asPiEvent, readTextDelta } from "./parse.ts";
 import type { RunResult } from "./pi-process.ts";
 import { makeCancelToken, runPi, withSlot } from "./pi-process.ts";
@@ -40,6 +41,8 @@ import type {
 	RunOverrides,
 	ThinkingLevel,
 	ToolDefinition,
+	ToolErrorCode,
+	ToolErrorDetails,
 	ToolResult,
 } from "./types.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./types.ts";
@@ -80,6 +83,30 @@ const SHARED_PROPS = {
 		description:
 			"Opt in to model text deltas in progress notifications. Requires a progressToken; without one, " +
 			"the normal stage notifications still remain unavailable to the caller.",
+	},
+	images: {
+		type: "array",
+		items: {
+			type: "object",
+			properties: {
+				data: {
+					type: "string",
+					description: "Raw base64 or a data:image/...;base64,... URI. Do not pass a path or remote URL.",
+				},
+				mimeType: {
+					type: "string",
+					enum: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+					description: "Image MIME type; must match the actual bytes.",
+				},
+			},
+			required: ["data", "mimeType"],
+			additionalProperties: false,
+		},
+		maxItems: 600,
+		description:
+			"Optional inline images for vision-capable models. Accepts raw base64 or a data URI. " +
+			"Supported formats: JPEG, PNG, GIF and WebP; each image is limited to 32 MiB and the request " +
+			"to 64 MiB. Paths and remote URLs are not accepted.",
 	},
 } as const;
 
@@ -300,6 +327,87 @@ export function toolResult(text: string, isError = false): ToolResult {
 	return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 
+function imageErrorResult(code: ToolErrorCode, message: string, retryable: boolean, imageIndex?: number): ToolResult {
+	const error: ToolErrorDetails = { code, message, retryable, ...(imageIndex === undefined ? {} : { imageIndex }) };
+	return {
+		content: [{ type: "text", text: `[image_error: ${code}] ${message}` }],
+		isError: true,
+		structuredContent: { error },
+	};
+}
+
+function imageInputFailure(err: unknown): ToolResult | undefined {
+	if (err instanceof ImageInputError) return imageErrorResult(err.code, err.message, err.retryable, err.imageIndex);
+	if (err instanceof ImageTransportError) return imageErrorResult(err.code, err.message, err.retryable);
+	return undefined;
+}
+
+function classifyImageOutcome(acc: Accumulator, hasImages: boolean, fallback: string): ToolErrorDetails | undefined {
+	if (!hasImages) return undefined;
+	const answer = selectAnswer(acc);
+	const reason = `${answer.errorMessage ?? ""} ${answer.diagnostics?.join(" ") ?? ""} ${fallback}`.toLowerCase();
+	if (!answerProblem(answer) && !fallback) return undefined;
+	if (/(does not support|not support|unsupported|vision|image input|multimodal)/.test(reason)) {
+		return {
+			code: "unsupported_model",
+			message:
+				"The selected pi model/provider rejected image input. Choose a model whose pi_models entry has images=yes, then retry.",
+			retryable: false,
+		};
+	}
+	return {
+		code: "image_provider_error",
+		message: answer.errorMessage
+			? `The image request was rejected by the pi provider: ${answer.errorMessage}`
+			: "The pi provider did not complete a request containing images; retry or choose another vision-capable model.",
+		retryable: true,
+	};
+}
+
+function attachImageOutcomeError(result: ToolResult, acc: Accumulator, hasImages: boolean, fallback = ""): ToolResult {
+	const details = classifyImageOutcome(acc, hasImages, fallback);
+	if (!details) return result;
+	return {
+		...result,
+		content: [
+			{
+				type: "text",
+				text: `[image_error: ${details.code}] ${details.message}\n\n${result.content[0]?.text ?? ""}`,
+			},
+		],
+		isError: true,
+		structuredContent: { error: details },
+	};
+}
+
+/**
+ * The live catalog is the only capability signal pi exposes before a request.
+ * Use it when the caller selected a concrete model, but never turn an absent or
+ * unparseable row into a false negative: aliases and provider defaults belong to
+ * pi, which remains the final authority.
+ */
+async function preflightImageCapability(
+	model: string | undefined,
+	images: ReturnType<typeof readImages>,
+	ctx: CallContext,
+): Promise<ToolResult | undefined> {
+	if (images.length === 0 || model === undefined || model.trim() === "") return undefined;
+	const requested = model.split(":", 1)[0];
+	const result = await withSlot(() => runPi(["--list-models"], process.cwd(), { token: ctx.token }));
+	if (result.cancelled || result.code !== 0) return undefined;
+	const row = result.stdout
+		.split("\n")
+		.slice(1)
+		.map((line) => line.trim().split(/\s+/))
+		.find((parts) => parts.length >= 6 && (parts[1] === requested || `${parts[0]}/${parts[1]}` === requested));
+	if (row?.at(-1)?.toLowerCase() !== "no") return undefined;
+	return imageErrorResult(
+		"unsupported_model",
+		`The selected model ${JSON.stringify(model)} is marked images=no by pi_models. Choose a model whose pi_models entry has images=yes, then retry.`,
+		false,
+	);
+}
+
 function resolveCwd(requested: unknown): string {
 	if (requested === undefined || requested === null || requested === "") return process.cwd();
 	if (typeof requested !== "string") throw new Error("cwd must be a string");
@@ -418,7 +526,7 @@ async function invokePi(
 	return { acc, result, elapsedMs: Date.now() - started };
 }
 
-function renderSuccess(outcome: Outcome, prefix: string | null): ToolResult {
+function renderSuccess(outcome: Outcome, prefix: string | null, hasImages = false): ToolResult {
 	const { acc, result, elapsedMs } = outcome;
 	const answer = selectAnswer(acc);
 	const problem = answerProblem(answer);
@@ -469,21 +577,31 @@ function renderSuccess(outcome: Outcome, prefix: string | null): ToolResult {
 	}
 
 	parts.push(`---\n${summarize(acc, elapsedMs)}`);
-	return toolResult(parts.join("\n\n"), Boolean(problem));
+	return attachImageOutcomeError(toolResult(parts.join("\n\n"), Boolean(problem)), acc, hasImages);
 }
 
-function renderOutcome(outcome: Outcome, sessionId: string, timeoutMs: number | undefined): ToolResult {
+function renderOutcome(
+	outcome: Outcome,
+	sessionId: string,
+	timeoutMs: number | undefined,
+	hasImages: boolean,
+): ToolResult {
 	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
-		return toolResult(
-			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
-				id: sessionId,
-				tool: "pi",
-				timeoutMs,
-			}),
-			true,
+		return attachImageOutcomeError(
+			toolResult(
+				renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
+					id: sessionId,
+					tool: "pi",
+					timeoutMs,
+				}),
+				true,
+			),
+			outcome.acc,
+			hasImages,
+			"pi run did not complete",
 		);
 	}
-	return renderSuccess(outcome, `[session: ${sessionId}]`);
+	return renderSuccess(outcome, `[session: ${sessionId}]`, hasImages);
 }
 
 async function waitForBackgroundResult(run: BackgroundRun, token: CancelToken): Promise<ToolResult> {
@@ -509,6 +627,7 @@ async function waitForBackgroundResult(run: BackgroundRun, token: CancelToken): 
  */
 export async function callPiStart(input: Record<string, unknown>, ctx: CallContext): Promise<ToolResult> {
 	let prompt: string;
+	let images: ReturnType<typeof readImages>;
 	let cwd: string;
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
@@ -516,6 +635,7 @@ export async function callPiStart(input: Record<string, unknown>, ctx: CallConte
 	let streamText: boolean;
 	try {
 		prompt = readPrompt(input.prompt, "pi_start");
+		images = readImages(input.images, "pi_start");
 		cwd = resolveCwd(input.cwd);
 		overrides = readOverrides(input);
 		timeoutMs = readTimeout(input.timeout_ms);
@@ -525,12 +645,23 @@ export async function callPiStart(input: Record<string, unknown>, ctx: CallConte
 		transport = resolveTransport(input.transport ?? "rpc");
 		if (!transport.acceptsMidRunMessages) throw new Error("pi_start requires transport 'rpc'");
 	} catch (err) {
+		const imageFailure = imageInputFailure(err);
+		if (imageFailure) return imageFailure;
 		return toolResult(`pi_start: ${(err as Error).message}`.replace("pi_start: pi_start:", "pi_start:"), true);
 	}
+	const capabilityFailure = await preflightImageCapability(overrides.model, images, ctx);
+	if (capabilityFailure) return capabilityFailure;
 
 	const sessionId = randomUUID();
 	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
-	const plan: RunPlan = { cwd, sessionId, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
+	const plan: RunPlan = {
+		cwd,
+		sessionId,
+		prompt,
+		...(images.length ? { images } : {}),
+		overrides,
+		timeoutMs: timeoutMs ?? TIMEOUT_MS,
+	};
 	const startedAt = Date.now();
 	registerBackgroundRun({
 		sessionId,
@@ -555,7 +686,7 @@ export async function callPiStart(input: Record<string, unknown>, ctx: CallConte
 		}),
 	)
 		.then((outcome) => {
-			const result = renderOutcome(outcome, sessionId, timeoutMs ?? TIMEOUT_MS);
+			const result = renderOutcome(outcome, sessionId, timeoutMs ?? TIMEOUT_MS, images.length > 0);
 			reportProgress(
 				backgroundContext,
 				sessionId,
@@ -583,6 +714,7 @@ export async function callPiStart(input: Record<string, unknown>, ctx: CallConte
 
 export async function callPi(input: Record<string, unknown>, ctx: CallContext): Promise<ToolResult> {
 	let prompt: string;
+	let images: ReturnType<typeof readImages>;
 	let cwd: string;
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
@@ -590,14 +722,24 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	let streamText: boolean;
 	try {
 		prompt = readPrompt(input.prompt, "pi");
+		images = readImages(input.images, "pi");
 		cwd = resolveCwd(input.cwd);
 		overrides = readOverrides(input);
 		timeoutMs = readTimeout(input.timeout_ms);
 		streamText = readStream(input.stream, "pi");
 		transport = resolveTransport(input.transport);
+		if (images.length > 0 && transport.name === "print") {
+			throw new ImageTransportError(
+				"Image input requires the rpc transport; print transport has no image-capable prompt channel.",
+			);
+		}
 	} catch (err) {
+		const imageFailure = imageInputFailure(err);
+		if (imageFailure) return imageFailure;
 		return toolResult(`pi: ${(err as Error).message}`.replace("pi: pi:", "pi:"), true);
 	}
+	const capabilityFailure = await preflightImageCapability(overrides.model, images, ctx);
+	if (capabilityFailure) return capabilityFailure;
 
 	const sessionId = randomUUID();
 	// Recorded before the run, not after: a run that times out or is cancelled is
@@ -606,7 +748,14 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	// unreachable.
 	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
 
-	const plan: RunPlan = { cwd, sessionId, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
+	const plan: RunPlan = {
+		cwd,
+		sessionId,
+		prompt,
+		...(images.length ? { images } : {}),
+		overrides,
+		timeoutMs: timeoutMs ?? TIMEOUT_MS,
+	};
 	const startedAt = Date.now();
 	reportProgress(ctx, sessionId, startedAt, "queued", "queued");
 	const outcome = await withSlot(async () => {
@@ -619,18 +768,23 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	// run was ended from outside rather than finished.
 	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
 		reportProgress(ctx, sessionId, startedAt, "failed", outcome.result.timedOut ? "timed out" : "run failed");
-		return toolResult(
-			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
-				id: sessionId,
-				tool: "pi",
-				timeoutMs: timeoutMs ?? TIMEOUT_MS,
-			}),
-			true,
+		return attachImageOutcomeError(
+			toolResult(
+				renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
+					id: sessionId,
+					tool: "pi",
+					timeoutMs: timeoutMs ?? TIMEOUT_MS,
+				}),
+				true,
+			),
+			outcome.acc,
+			images.length > 0,
+			"pi run did not complete",
 		);
 	}
 
 	reportProgress(ctx, sessionId, startedAt, "finished", "finished");
-	return renderSuccess(outcome, `[session: ${sessionId}]`);
+	return renderSuccess(outcome, `[session: ${sessionId}]`, images.length > 0);
 }
 
 export async function callPiReply(input: Record<string, unknown>, ctx: CallContext): Promise<ToolResult> {
@@ -640,6 +794,13 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	}
 	const background = getBackgroundRun(session);
 	if (input.prompt === undefined) {
+		if (input.images !== undefined) {
+			return imageErrorResult(
+				"image_input_not_allowed",
+				"pi_reply without a prompt only retrieves a background result; provide prompt to start a new image turn.",
+				false,
+			);
+		}
 		if (background === undefined) {
 			return toolResult(
 				"pi_reply: `prompt` is required unless the session was started with `pi_start`; " +
@@ -652,6 +813,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 
 	const known = getSession(session);
 	let prompt: string;
+	let images: ReturnType<typeof readImages>;
 	let cwd: string;
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
@@ -659,6 +821,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	let streamText: boolean;
 	try {
 		prompt = readPrompt(input.prompt, "pi_reply");
+		images = readImages(input.images, "pi_reply");
 		cwd = resolveCwd(input.cwd ?? known?.cwd);
 		overrides = readOverrides({
 			...input,
@@ -668,11 +831,27 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 		timeoutMs = readTimeout(input.timeout_ms);
 		streamText = readStream(input.stream, "pi_reply");
 		transport = resolveTransport(input.transport);
+		if (images.length > 0 && transport.name === "print") {
+			throw new ImageTransportError(
+				"Image input requires the rpc transport; print transport has no image-capable prompt channel.",
+			);
+		}
 	} catch (err) {
+		const imageFailure = imageInputFailure(err);
+		if (imageFailure) return imageFailure;
 		return toolResult(`pi_reply: ${(err as Error).message}`.replace("pi_reply: pi_reply:", "pi_reply:"), true);
 	}
+	const capabilityFailure = await preflightImageCapability(overrides.model, images, ctx);
+	if (capabilityFailure) return capabilityFailure;
 
-	const plan: RunPlan = { cwd, sessionId: session, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
+	const plan: RunPlan = {
+		cwd,
+		sessionId: session,
+		prompt,
+		...(images.length ? { images } : {}),
+		overrides,
+		timeoutMs: timeoutMs ?? TIMEOUT_MS,
+	};
 	const startedAt = Date.now();
 	reportProgress(ctx, session, startedAt, "queued", "queued");
 	const outcome = await withSessionLock(session, () => {
@@ -693,13 +872,18 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 		// Keep the session current even on failure: the conversation on disk grew,
 		// and the next attempt should resume in the same place.
 		rememberSession(session, cwd, {});
-		return toolResult(
-			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
-				id: session,
-				tool: "pi_reply",
-				timeoutMs: timeoutMs ?? TIMEOUT_MS,
-			}),
-			true,
+		return attachImageOutcomeError(
+			toolResult(
+				renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
+					id: session,
+					tool: "pi_reply",
+					timeoutMs: timeoutMs ?? TIMEOUT_MS,
+				}),
+				true,
+			),
+			outcome.acc,
+			images.length > 0,
+			"pi run did not complete",
 		);
 	}
 
@@ -715,7 +899,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 		? `[warning: no existing session ${session} in ${cwd} — pi started a new one, so there is no prior context]`
 		: null;
 	reportProgress(ctx, session, startedAt, "finished", "finished");
-	return renderSuccess(outcome, prefix);
+	return renderSuccess(outcome, prefix, images.length > 0);
 }
 
 /** Utility flag, not an agent run: no session, no json stream, no accumulator. */

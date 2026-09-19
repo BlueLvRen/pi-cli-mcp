@@ -108,11 +108,19 @@ export class Client {
 		return init;
 	}
 
-	async tool(name: string, args: unknown = {}, meta?: unknown): Promise<{ text: string; isError: boolean }> {
+	async tool(
+		name: string,
+		args: unknown = {},
+		meta?: unknown,
+	): Promise<{ text: string; isError: boolean; structuredContent?: any }> {
 		const params: Record<string, unknown> = { name, arguments: args };
 		if (meta !== undefined) params._meta = meta;
 		const res = await this.call("tools/call", params);
-		return { text: res.result?.content?.[0]?.text ?? "", isError: res.result?.isError === true };
+		return {
+			text: res.result?.content?.[0]?.text ?? "",
+			isError: res.result?.isError === true,
+			structuredContent: res.result?.structuredContent,
+		};
 	}
 
 	progressNotes(): string[] {

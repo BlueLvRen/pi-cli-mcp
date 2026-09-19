@@ -22,6 +22,7 @@ window, or parallel work.
 - 增加 MCP 标准 `notifications/progress` 进度通知，报告排队、运行、工具调用、收尾、完成和失败等阶段。
 - 增加 `pi_start` 非阻塞启动入口，支持“启动 → 查询 → 干预 → 取回结果”的调用流程。
 - 支持通过 `stream: true` 选择性接收模型文本增量；默认仍保持原有阻塞式最终结果兼容性。
+- `pi`、`pi_start` 和带 prompt 的 `pi_reply` 支持通过 `images` 传入内联图片，并在图片输入失败时返回稳定的结构化错误。
 - 丰富 `pi_running` 输出，提供运行状态、已耗时、最后进度事件以及 `pi_send`/终止能力信息。
 - 增强 Windows 支持，包括 `.cmd`/`.bat` 形式的 pi 命令、进程树清理和跨平台构建脚本。
 
@@ -89,6 +90,7 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | `no_tools` | Pure reasoning over the prompt text. |
 | `system_prompt_append` | Extra text appended to pi's system prompt. |
 | `stream` | Opt in to model text deltas in MCP progress notifications. Requires a progress token. |
+| `images` | Optional inline images: `{ data, mimeType }`. `data` accepts raw base64 or a `data:image/...;base64,...` URI. |
 
 ```js
 pi({
@@ -98,6 +100,32 @@ pi({
   stream: true
 })
 ```
+
+图片示例（图片不会被拼进 prompt，而是按 Pi 的 `ImageContent` 传输）：
+
+```js
+pi({
+  prompt: "请描述这张图片，并指出其中的文字。",
+  model: "provider/vision-model",
+  images: [{ data: "iVBORw0KGgo...", mimeType: "image/png" }]
+})
+```
+
+`images` 的约束：支持 JPEG、PNG、GIF、WebP；每张图片最多 32 MiB，单次最多 600 张，解码后图片总量最多 64 MiB。服务端会校验 Base64、Data URI 的 MIME 类型和实际文件头。当前只接受内联 Base64，不接受本地路径、远程 URL 或 provider-specific `file_id`。默认 MCP JSON-RPC frame 上限为 48,000,000 字符，可用 `PI_MCP_MAX_FRAME` 调整。
+
+图片输入使用 `rpc` transport。`print` transport 没有 Pi 的图片 prompt 通道，会在启动前返回 `image_transport_error`。模型是否支持图片以 `pi_models` 的 `images` 列为参考；provider 仍可能拒绝请求，服务端不会静默丢弃图片。
+
+图片相关失败同时返回人类可读文本和 `structuredContent.error`：
+
+```json
+{
+  "code": "unsupported_model",
+  "message": "The selected pi model/provider rejected image input...",
+  "retryable": false
+}
+```
+
+稳定错误码包括 `invalid_image_data`、`unsupported_mime_type`、`image_too_large`、`image_request_too_large`、`image_transport_error`、`image_input_not_allowed`、`unsupported_model` 和 `image_provider_error`。`pi_reply({ session })` 不带 prompt 时只是取回 `pi_start` 的结果，因此不能同时传 `images`；需要新图片轮次时请提供 prompt。
 
 When the caller supplies an MCP progress token, `pi` and `pi_reply` emit standard
 `notifications/progress` messages while the blocking call is running. They include a stable
@@ -323,7 +351,7 @@ tree before exiting. Detached children have no other parent to clean them up.
 | `PI_MCP_STDERR_KEEP_EVENTS` | unset | `1` forwards stderr verbatim, event lines included. |
 | `PI_MCP_MAX_CAPTURE` | `16000000` | Read-buffer guard against a runaway stream. |
 | `PI_MCP_MAX_LINE` | `8000000` | Longest single event line from pi before it is dropped. |
-| `PI_MCP_MAX_FRAME` | `8000000` | Longest single JSON-RPC frame from the client. |
+| `PI_MCP_MAX_FRAME` | `48000000` | Longest single JSON-RPC frame from the client; relevant to inline image payloads. |
 | `PI_MCP_MAX_SESSIONS` | `1000` | Remembered sessions before the oldest is dropped. |
 | `PI_MCP_KILL_GRACE_MS` | `5000` | SIGTERM → SIGKILL grace period. |
 | `PI_MCP_ABORT_GRACE_MS` | `5000` | How long `abort` gets before signals (rpc only). |
