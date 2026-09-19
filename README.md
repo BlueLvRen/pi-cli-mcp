@@ -11,6 +11,22 @@ Use it when your primary agent (Claude Code, Cursor, any MCP client) should hand
 second opinion from a different model, an investigation you want kept out of the main context
 window, or parallel work.
 
+## Fork 说明
+
+本项目是基于 [minmax/pi-cli-mcp](https://github.com/minmax/pi-cli-mcp) 的 fork，当前维护仓库为
+[BlueLvRen/pi-cli-mcp](https://github.com/BlueLvRen/pi-cli-mcp)。上游项目采用 MIT License；本 fork
+保留原版权和许可证，并在此基础上持续维护增强功能。
+
+当前 fork 的主要改动：
+
+- 增加 MCP 标准 `notifications/progress` 进度通知，报告排队、运行、工具调用、收尾、完成和失败等阶段。
+- 支持通过 `stream: true` 选择性接收模型文本增量；默认仍保持原有阻塞式最终结果兼容性。
+- 丰富 `pi_running` 输出，提供运行状态、已耗时、最后进度事件以及 `pi_send`/终止能力信息。
+- 增强 Windows 支持，包括 `.cmd`/`.bat` 形式的 pi 命令、进程树清理和跨平台构建脚本。
+
+除上述增强外，项目仍遵循上游的 MCP 工具接口、会话机制和传输模式设计。提交问题或贡献代码时，
+请优先说明使用的是本 fork 还是上游版本。
+
 ## Install
 
 ```bash
