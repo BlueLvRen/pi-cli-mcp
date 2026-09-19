@@ -19,7 +19,7 @@ import {
 	TOOLS,
 	toolResult,
 } from "./tools.ts";
-import type { CallContext, CancelToken, JsonRpcId, JsonRpcMessage, ToolResult } from "./types.ts";
+import type { CallContext, CancelToken, JsonRpcId, JsonRpcMessage, ProgressUpdate, ToolResult } from "./types.ts";
 
 function send(message: unknown): void {
 	process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -53,12 +53,20 @@ function makeContext(token: CancelToken, meta: Record<string, unknown> | undefin
 	if (progressToken === undefined || progressToken === null) return { token };
 	return {
 		token,
-		progress: (message: string) => {
+		progress: (update: ProgressUpdate) => {
 			counter += 1;
 			send({
 				jsonrpc: "2.0",
 				method: "notifications/progress",
-				params: { progressToken, progress: counter, message },
+				params: {
+					progressToken,
+					progress: counter,
+					message: update.message ?? update.status,
+					status: update.status,
+					session: update.session,
+					elapsed_ms: update.elapsedMs,
+					...(update.text === undefined ? {} : { text: update.text }),
+				},
 			});
 		},
 	};

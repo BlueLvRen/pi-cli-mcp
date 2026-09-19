@@ -147,6 +147,31 @@ describe("progress", () => {
 		const res = await run({});
 		expect(res.notes).toEqual([]);
 	});
+
+	it("adds structured lifecycle fields and opt-in text deltas", async () => {
+		const client = new Client({ ...ws.env, FAKE_STREAM: "1" }, ws.dir);
+		await client.handshake();
+		const res = await client.tool("pi", { prompt: "go", cwd: ws.dir, stream: true }, { progressToken: "t1" });
+		const events = client.progressEvents();
+		client.close();
+
+		expect(res.isError).toBe(false);
+		expect(events.map((event) => event.params?.status)).toContain("queued");
+		expect(events.map((event) => event.params?.status)).toContain("finished");
+		expect(events.every((event) => typeof event.params?.session === "string")).toBe(true);
+		expect(events.every((event) => typeof event.params?.elapsed_ms === "number")).toBe(true);
+		expect(events.map((event) => event.params?.text).filter(Boolean)).toEqual(["streamed ", "preview"]);
+	});
+
+	it("does not send text deltas unless stream is enabled", async () => {
+		const client = new Client({ ...ws.env, FAKE_STREAM: "1" }, ws.dir);
+		await client.handshake();
+		await client.tool("pi", { prompt: "go", cwd: ws.dir }, { progressToken: "t1" });
+		const events = client.progressEvents();
+		client.close();
+
+		expect(events.some((event) => event.params?.text !== undefined)).toBe(false);
+	});
 });
 
 describe("input validation", () => {

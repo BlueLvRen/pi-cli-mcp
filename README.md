@@ -70,14 +70,23 @@ Keep the server name short (`pi`): it becomes part of the tool names your model 
 | `tools` | Allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `no_tools` | Pure reasoning over the prompt text. |
 | `system_prompt_append` | Extra text appended to pi's system prompt. |
+| `stream` | Opt in to model text deltas in MCP progress notifications. Requires a progress token. |
 
 ```js
 pi({
   prompt: "Map how retries are wired in src/http.rs. Report call sites only.",
   cwd: "/abs/path/to/repo",
-  tools: "read,grep,find,ls"
+  tools: "read,grep,find,ls",
+  stream: true
 })
 ```
+
+When the caller supplies an MCP progress token, `pi` and `pi_reply` emit standard
+`notifications/progress` messages while the blocking call is running. They include a stable
+`status` (`queued`, `running`, `tool`, `settling`, `finished`, or `failed`), the session id,
+elapsed milliseconds, and a safe progress message. With `stream: true`, model text deltas are
+also included in the extension field `text`; raw stdout, prompts, tool arguments, and tool output
+are never forwarded.
 
 > **pi has no permission system.** With its default tools it edits files and runs shell commands as
 > your user inside `cwd`. Pass `tools` or `no_tools` whenever the task is analysis. Use
@@ -164,7 +173,7 @@ pi({ prompt: "long task…", cwd: "/repo" })   // moved to the background by the
 
 pi_running()
 // 1 running:
-// 5aef3387-…  8.0s  /repo
+// 5aef3387-…  status=running  elapsed=8.0s  cwd=/repo  can_send=true can_abort=true  last_event_at=…  last: running bash
 
 pi_send({ session: "5aef3387-…", message: "stop and report what you have" })
 // Sent steer to session 5aef3387-… (running for 8.1s).

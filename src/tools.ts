@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { Accumulator } from "./answer.ts";
 import {
 	accumulate,
@@ -14,12 +15,22 @@ import {
 	tailStderr,
 } from "./answer.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, MAX_PROMPT, MAX_TIMEOUT_MS, TIMEOUT_MS } from "./config.ts";
+import { asPiEvent, readTextDelta } from "./parse.ts";
 import type { RunResult } from "./pi-process.ts";
 import { runPi, withSlot } from "./pi-process.ts";
 import { getSession, listSessions, rememberSession, withSessionLock } from "./sessions.ts";
 import type { RunPlan, Transport } from "./transport/index.ts";
 import { getRun, listRuns, resolveTransport, TRANSPORT_NAMES } from "./transport/index.ts";
-import type { CallContext, RunOverrides, ThinkingLevel, ToolDefinition, ToolResult } from "./types.ts";
+import { updateRun } from "./transport/registry.ts";
+import type {
+	CallContext,
+	ProgressStatus,
+	ProgressUpdate,
+	RunOverrides,
+	ThinkingLevel,
+	ToolDefinition,
+	ToolResult,
+} from "./types.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./types.ts";
 
 // --- schemas --------------------------------------------------------------
@@ -52,6 +63,12 @@ const SHARED_PROPS = {
 			"Usually omit — the server default is generous. Override only when the task's real size " +
 			"demands it. A run killed at the deadline is not lost: it still returns its session id and is " +
 			"resumable with pi_reply.",
+	},
+	stream: {
+		type: "boolean",
+		description:
+			"Opt in to model text deltas in progress notifications. Requires a progressToken; without one, " +
+			"the normal stage notifications still remain unavailable to the caller.",
 	},
 } as const;
 
@@ -232,7 +249,7 @@ export function toolResult(text: string, isError = false): ToolResult {
 function resolveCwd(requested: unknown): string {
 	if (requested === undefined || requested === null || requested === "") return process.cwd();
 	if (typeof requested !== "string") throw new Error("cwd must be a string");
-	if (!requested.startsWith("/")) throw new Error(`cwd must be an absolute path: ${requested}`);
+	if (!isAbsolute(requested)) throw new Error(`cwd must be an absolute path: ${requested}`);
 	if (!existsSync(requested) || !statSync(requested).isDirectory()) {
 		throw new Error(`cwd does not exist or is not a directory: ${requested}`);
 	}
@@ -247,6 +264,12 @@ function readTimeout(value: unknown): number | undefined {
 	if (value > MAX_TIMEOUT_MS) {
 		throw new Error(`timeout_ms ${value} exceeds the server ceiling of ${MAX_TIMEOUT_MS} ms`);
 	}
+	return value;
+}
+
+function readStream(value: unknown, tool: string): boolean {
+	if (value === undefined || value === null) return false;
+	if (typeof value !== "boolean") throw new Error(`${tool}: stream must be a boolean`);
 	return value;
 }
 
@@ -298,12 +321,45 @@ interface Outcome {
 	elapsedMs: number;
 }
 
-async function invokePi(transport: Transport, plan: RunPlan, ctx: CallContext): Promise<Outcome> {
+function reportProgress(
+	ctx: CallContext,
+	session: string,
+	startedAt: number,
+	status: ProgressStatus,
+	message?: string,
+	text?: string,
+): void {
+	const update: ProgressUpdate = {
+		status,
+		session,
+		elapsedMs: Date.now() - startedAt,
+		...(message === undefined ? {} : { message }),
+		...(text === undefined ? {} : { text }),
+	};
+	updateRun(session, { status, ...(message === undefined ? {} : { message }) });
+	ctx.progress?.(update);
+}
+
+async function invokePi(
+	transport: Transport,
+	plan: RunPlan,
+	ctx: CallContext,
+	startedAt: number,
+	streamText: boolean,
+): Promise<Outcome> {
 	const acc = newAccumulator();
 	const started = Date.now();
 	const result = await transport.run(plan, ctx, (event) => {
 		const note = accumulate(acc, event);
-		if (note && ctx.progress) ctx.progress(note);
+		const text = streamText ? readTextDelta(event) : null;
+		if (asPiEvent(event)?.type === "agent_settled") {
+			reportProgress(ctx, plan.sessionId, startedAt, "settling", "settling final answer");
+		} else if (note?.startsWith("running ")) {
+			reportProgress(ctx, plan.sessionId, startedAt, "tool", note);
+		} else if (note) {
+			reportProgress(ctx, plan.sessionId, startedAt, "running", note);
+		}
+		if (text !== null) reportProgress(ctx, plan.sessionId, startedAt, "running", "text delta", text);
 	});
 	return { acc, result, elapsedMs: Date.now() - started };
 }
@@ -370,11 +426,13 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
 	let transport: Transport;
+	let streamText: boolean;
 	try {
 		prompt = readPrompt(input.prompt, "pi");
 		cwd = resolveCwd(input.cwd);
 		overrides = readOverrides(input);
 		timeoutMs = readTimeout(input.timeout_ms);
+		streamText = readStream(input.stream, "pi");
 		transport = resolveTransport(input.transport);
 	} catch (err) {
 		return toolResult(`pi: ${(err as Error).message}`.replace("pi: pi:", "pi:"), true);
@@ -388,12 +446,18 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 	rememberSession(sessionId, cwd, { model: overrides.model, thinking: overrides.thinking });
 
 	const plan: RunPlan = { cwd, sessionId, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
-	const outcome = await withSlot(() => invokePi(transport, plan, ctx));
+	const startedAt = Date.now();
+	reportProgress(ctx, sessionId, startedAt, "queued", "queued");
+	const outcome = await withSlot(async () => {
+		reportProgress(ctx, sessionId, startedAt, "running", "pi started");
+		return invokePi(transport, plan, ctx, startedAt, streamText);
+	});
 
 	// A turn ended by abort exits cleanly, so the exit code alone would report a
 	// timed-out or cancelled run as a normal answer. The flags are what say the
 	// run was ended from outside rather than finished.
 	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
+		reportProgress(ctx, sessionId, startedAt, "failed", outcome.result.timedOut ? "timed out" : "run failed");
 		return toolResult(
 			renderFailure(outcome.acc, outcome.result, outcome.elapsedMs, {
 				id: sessionId,
@@ -404,6 +468,7 @@ export async function callPi(input: Record<string, unknown>, ctx: CallContext): 
 		);
 	}
 
+	reportProgress(ctx, sessionId, startedAt, "finished", "finished");
 	return renderSuccess(outcome, `[session: ${sessionId}]`);
 }
 
@@ -419,6 +484,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	let overrides: RunOverrides;
 	let timeoutMs: number | undefined;
 	let transport: Transport;
+	let streamText: boolean;
 	try {
 		prompt = readPrompt(input.prompt, "pi_reply");
 		cwd = resolveCwd(input.cwd ?? known?.cwd);
@@ -428,18 +494,27 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 			thinking: input.thinking ?? known?.thinking,
 		});
 		timeoutMs = readTimeout(input.timeout_ms);
+		streamText = readStream(input.stream, "pi_reply");
 		transport = resolveTransport(input.transport);
 	} catch (err) {
 		return toolResult(`pi_reply: ${(err as Error).message}`.replace("pi_reply: pi_reply:", "pi_reply:"), true);
 	}
 
 	const plan: RunPlan = { cwd, sessionId: session, prompt, overrides, timeoutMs: timeoutMs ?? TIMEOUT_MS };
-	const outcome = await withSessionLock(session, () => withSlot(() => invokePi(transport, plan, ctx)));
+	const startedAt = Date.now();
+	reportProgress(ctx, session, startedAt, "queued", "queued");
+	const outcome = await withSessionLock(session, () =>
+		withSlot(async () => {
+			reportProgress(ctx, session, startedAt, "running", "pi started");
+			return invokePi(transport, plan, ctx, startedAt, streamText);
+		}),
+	);
 
 	// A turn ended by abort exits cleanly, so the exit code alone would report a
 	// timed-out or cancelled run as a normal answer. The flags are what say the
 	// run was ended from outside rather than finished.
 	if (outcome.result.code !== 0 || outcome.result.timedOut || outcome.result.cancelled) {
+		reportProgress(ctx, session, startedAt, "failed", outcome.result.timedOut ? "timed out" : "run failed");
 		// Keep the session current even on failure: the conversation on disk grew,
 		// and the next attempt should resume in the same place.
 		rememberSession(session, cwd, {});
@@ -464,6 +539,7 @@ export async function callPiReply(input: Record<string, unknown>, ctx: CallConte
 	const prefix = isNew
 		? `[warning: no existing session ${session} in ${cwd} — pi started a new one, so there is no prior context]`
 		: null;
+	reportProgress(ctx, session, startedAt, "finished", "finished");
 	return renderSuccess(outcome, prefix);
 }
 
@@ -526,6 +602,10 @@ export function callPiSend(input: Record<string, unknown>): ToolResult {
 
 	run.handle.send(command === "abort" ? { type: "abort" } : { type: command, message });
 	run.sent.push({ at: Date.now(), type: String(command) });
+	updateRun(session, {
+		status: command === "abort" ? "stopping" : "running",
+		message: command === "abort" ? "abort requested" : `${command} sent`,
+	});
 
 	const elapsed = ((Date.now() - run.startedAt) / 1000).toFixed(1);
 	return toolResult(
@@ -546,7 +626,12 @@ export function callPiRunning(): ToolResult {
 	const rows = runs.map((run) => {
 		const elapsed = ((Date.now() - run.startedAt) / 1000).toFixed(1);
 		const sent = run.sent.length > 0 ? ` sent: ${run.sent.map((s) => s.type).join(",")}` : "";
-		return `${run.sessionId}  ${elapsed}s  ${run.cwd}${sent}`;
+		const progress = run.lastProgress ? `  last: ${run.lastProgress}` : "";
+		const lastEvent = new Date(run.lastEventAt).toISOString();
+		return (
+			`${run.sessionId}  status=${run.status}  elapsed=${elapsed}s  cwd=${run.cwd}  ` +
+			`can_send=true can_abort=true  last_event_at=${lastEvent}${progress}${sent}`
+		);
 	});
 	return toolResult(`${rows.length} running:\n\n${rows.join("\n")}`);
 }

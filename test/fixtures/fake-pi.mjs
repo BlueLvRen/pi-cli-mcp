@@ -410,6 +410,10 @@ async function runRpc() {
  */
 function spawnMarkedChild() {
 	const tag = process.env.FAKE_CHILD_TAG ?? "pi-cli-mcp-child";
+	if (process.platform === "win32") {
+		spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", tag], { stdio: "ignore" });
+		return;
+	}
 	// Two commands, deliberately: with a single one `sh -c` execs it and replaces
 	// its own image, which drops the tag from the command line that pgrep -f
 	// matches on. The trailing `true` keeps the shell — and the tag — alive.
@@ -417,6 +421,15 @@ function spawnMarkedChild() {
 }
 
 function finalMessage(text) {
+	if (process.env.FAKE_STREAM === "1") {
+		for (const delta of ["streamed ", "preview"]) {
+			out({
+				type: "message_update",
+				usage: { input: 20, output: 1, cost: { total: 0 } },
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta },
+			});
+		}
+	}
 	out({
 		type: "message_end",
 		message: {

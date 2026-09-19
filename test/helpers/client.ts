@@ -1,7 +1,7 @@
 // A minimal MCP client that drives the real server over stdio, plus the fake pi
 // binary the tests point it at.
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -121,14 +121,31 @@ export class Client {
 			.map((n) => String(n.params?.message ?? ""));
 	}
 
+	progressEvents(): JsonRpcResponse[] {
+		return this.notifications.filter((n) => n.method === "notifications/progress");
+	}
+
 	close(): void {
 		this.child.stdin.end();
+		if (process.platform === "win32" && this.child.pid !== undefined) {
+			try {
+				execFileSync("taskkill", ["/PID", String(this.child.pid), "/T", "/F"], { stdio: "ignore" });
+			} catch {
+				// The server may already have exited after stdin EOF.
+			}
+			return;
+		}
 		this.child.kill();
 	}
 }
 
 /** A shell shim, because the server spawns its pi binary as a plain command. */
 export function makeFakeBin(dir: string): string {
+	if (process.platform === "win32") {
+		const bin = join(dir, "pi.cmd");
+		writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${FAKE_PI}" %*\r\n`);
+		return bin;
+	}
 	const bin = join(dir, "pi");
 	writeFileSync(bin, `#!/bin/sh\nexec ${process.execPath} ${FAKE_PI} "$@"\n`);
 	chmodSync(bin, 0o755);

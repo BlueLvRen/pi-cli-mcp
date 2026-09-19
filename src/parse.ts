@@ -32,6 +32,15 @@ export function eventAs<T extends PiEvent["type"]>(event: { type: string }, _typ
 	return event as unknown as PiEventOf<T>;
 }
 
+/** Read only a model text delta from pi's streaming message event. */
+export function readTextDelta(value: unknown): string | null {
+	const event = asPiEvent(value);
+	if (event === null || event.type !== "message_update") return null;
+	const update = asRecord(eventAs(event, "message_update").assistantMessageEvent);
+	if (update?.type !== "text_delta") return null;
+	return typeof update.delta === "string" && update.delta.length > 0 ? update.delta : null;
+}
+
 export interface ParsedUsage {
 	input: number;
 	output: number;

@@ -20,6 +20,13 @@ afterAll(() => ws.cleanup());
 const CHILD_TAG = "pi-cli-mcp-lifecycle-child";
 
 function survivors(): string {
+	if (process.platform === "win32") {
+		const command =
+			`Get-CimInstance Win32_Process | ` +
+			`Where-Object { $_.Name -notmatch 'powershell' -and $_.CommandLine -and $_.CommandLine.Contains('${CHILD_TAG}') } | ` +
+			`Select-Object -ExpandProperty ProcessId`;
+		return spawnSync("powershell.exe", ["-NoProfile", "-Command", command], { encoding: "utf8" }).stdout.trim();
+	}
 	return spawnSync("pgrep", ["-f", CHILD_TAG], { encoding: "utf8" }).stdout.trim();
 }
 

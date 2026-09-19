@@ -129,10 +129,19 @@ export async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
 // --- running pi -----------------------------------------------------------
 
 function buildCommand(args: string[]): { command: string; argv: string[] } {
+	if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(PI_BIN)) {
+		const commandLine = [PI_BIN, ...args].map(quoteWindowsArg).join(" ");
+		return { command: process.env.ComSpec ?? "cmd.exe", argv: ["/d", "/s", "/c", commandLine] };
+	}
 	if (!PI_WRAP) return { command: PI_BIN, argv: args };
 	const parts = PI_WRAP.split(/\s+/);
 	const [command, ...prefix] = parts;
 	return { command: command ?? PI_BIN, argv: [...prefix, PI_BIN, ...args] };
+}
+
+function quoteWindowsArg(value: string): string {
+	if (/^[\w./\\:=+@-]+$/.test(value)) return value;
+	return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, "$1$1")}"`;
 }
 
 function appendCapped(current: string, chunk: string): string {
@@ -166,7 +175,10 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 				cwd,
 				stdio: [options.stdin ?? "ignore", "pipe", "pipe"],
 				env: process.env,
-				detached: true,
+				// POSIX needs a detached process group so signals reach pi's whole
+				// tree. Windows uses taskkill /T below and detached cmd.exe shims do
+				// not reliably forward the rpc stdin pipe.
+				detached: process.platform !== "win32",
 			});
 		} catch (err) {
 			resolve({ code: -1, stdout: "", stderr: `failed to spawn ${command}: ${(err as Error).message}` });
@@ -185,6 +197,17 @@ export function runPi(args: string[], cwd: string, options: RunOptions = {}): Pr
 		// Signal the whole process group; fall back to the single child if the group
 		// is already gone (ESRCH) or the platform refuses the negative pid.
 		const signalTree = (signal: NodeJS.Signals): void => {
+			if (process.platform === "win32") {
+				if (child.pid !== undefined) {
+					// Windows has no POSIX process groups. `taskkill /T` is the
+					// equivalent needed for .cmd shims and their pi descendants.
+					spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+						stdio: "ignore",
+						windowsHide: true,
+					});
+				}
+				return;
+			}
 			try {
 				if (child.pid !== undefined) process.kill(-child.pid, signal);
 			} catch {

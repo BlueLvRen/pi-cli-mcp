@@ -12,7 +12,7 @@ import type { PiHandle, RunResult } from "../pi-process.ts";
 import { runPi } from "../pi-process.ts";
 import type { CallContext } from "../types.ts";
 import { overrideArgs } from "./args.ts";
-import { registerRun } from "./registry.ts";
+import { registerRun, updateRun } from "./registry.ts";
 import type { RunPlan, Transport } from "./types.ts";
 
 export const rpcTransport: Transport = {
@@ -38,6 +38,7 @@ export const rpcTransport: Transport = {
 			// lost. After `abort` the turn closes through the normal path and the
 			// events arrive; SIGTERM/SIGKILL still follow if it does not.
 			gracefulStop: () => {
+				updateRun(plan.sessionId, { status: "stopping" });
 				handle?.send({ type: "abort" });
 			},
 			onStart: (piHandle) => {
@@ -47,11 +48,15 @@ export const rpcTransport: Transport = {
 					cwd: plan.cwd,
 					startedAt: Date.now(),
 					handle: piHandle,
+					status: "running",
+					lastProgress: "pi started",
+					lastEventAt: Date.now(),
 				});
 				piHandle.send({ type: "prompt", message: plan.prompt });
 			},
 			onEvent: (event) => {
 				onEvent(event);
+				if (isSettled(event)) updateRun(plan.sessionId, { status: "settling", message: "settling final answer" });
 				// `agent_settled` is pi's end-of-turn marker. Closing stdin is how its
 				// rpc mode is asked to exit; without it the process would sit idle
 				// until the hard deadline.

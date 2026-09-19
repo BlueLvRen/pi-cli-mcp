@@ -90,6 +90,8 @@ describe("reaching a running turn", () => {
 		// The running turn is visible, and its session id is how it is addressed.
 		const running = await client.tool("pi_running");
 		expect(running.text).toContain(ws.dir);
+		expect(running.text).toContain("running");
+		expect(running.text).toContain("can_send=true can_abort=true");
 		const id = running.text.split("\n").at(-1)?.split(/\s+/)[0] ?? "";
 		expect(id).toMatch(/^[0-9a-f-]{36}$/);
 

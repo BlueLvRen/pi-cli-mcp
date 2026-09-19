@@ -14,7 +14,7 @@
 		"LICENSE"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+		"build": "tsc -p tsconfig.build.json && node -e \"if (process.platform !== 'win32') require('node:fs').chmodSync('dist/index.js', 0o755)\"",
 		"clean": "rm -rf dist",
 		"prepare": "npm run build",
 		"hooks": "git config core.hooksPath .githooks",

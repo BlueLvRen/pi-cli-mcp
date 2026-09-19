@@ -87,6 +87,16 @@ export interface ToolResult {
 	isError?: boolean;
 }
 
+export type ProgressStatus = "queued" | "running" | "tool" | "settling" | "stopping" | "finished" | "failed";
+
+export interface ProgressUpdate {
+	status: ProgressStatus;
+	session: string;
+	elapsedMs: number;
+	message?: string;
+	text?: string;
+}
+
 /**
  * The four MCP tool hints. Directories (OpenAI's among them) reject a tool that
  * leaves any of them out or sends a non-boolean, and hosts warn with them before
@@ -119,7 +129,7 @@ export interface CancelToken {
 
 export interface CallContext {
 	token: CancelToken;
-	progress?: (message: string) => void;
+	progress?: (update: ProgressUpdate) => void;
 }
 
 // --- run configuration ----------------------------------------------------
